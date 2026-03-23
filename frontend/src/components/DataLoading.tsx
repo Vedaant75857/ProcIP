@@ -735,16 +735,6 @@ export default function DataLoading({
           </div>
 
           <div className="p-6 border-t border-neutral-100 dark:border-neutral-800 flex justify-end gap-3">
-            <motion.button
-              whileHover={{ y: -1, scale: 1.01 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={handleGenerateAppendPlan}
-              disabled={loading}
-              className="inline-flex items-center px-5 py-2.5 text-sm font-bold rounded-xl border border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 bg-white dark:bg-neutral-900 shadow-sm hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors gap-2 disabled:opacity-50"
-            >
-              Skip to Append Plan
-              <ArrowRight className="w-4 h-4" />
-            </motion.button>
             <PrimaryButton
               onClick={onProceedToAppend}
               disabled={loading}

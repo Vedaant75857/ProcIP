@@ -1,0 +1,26 @@
+{
+  "Vendor Name": [
+    "DOC. FORNITORE",
+    "FORNITORE_NOME"
+  ],
+  "Invoice Number": [
+    "FATT DATA DOC."
+  ],
+  "GL Account Description": [
+    "CONTO_CO_GE_DESC"
+  ],
+  "GL Account": [
+    "WBE"
+  ],
+  "Invoice Line Description": [
+    "WBE_DESC"
+  ],
+  "Total Amount paid in Reporting Currency": [
+    "DIVISA DI GRUPPO",
+    "IMPORTO_EUR"
+  ],
+  "Total Amount paid in Local Currency": [
+    "IMPORTO_DIVISA_DOCUMENTO",
+    "IMPORTO_DIVISA_LOCALE"
+  ]
+}

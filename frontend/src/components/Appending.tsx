@@ -476,7 +476,7 @@ export default function Appending({
             </div>
             {appendGroupMappings.length === 0 ? (
               <PrimaryButton onClick={handleGenerateAppendMapping} disabled={loading}>
-                {loading ? <Loader2 className="animate-spin w-4 h-4" /> : "Analyze Header Mappings"}
+                {loading ? <Loader2 className="animate-spin w-4 h-4" /> : "Analyze Header Alignment"}
                 <ArrowRight className="w-4 h-4" />
               </PrimaryButton>
             ) : (

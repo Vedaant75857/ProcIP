@@ -75,9 +75,18 @@ def run_header_norm(
     conn: sqlite3.Connection,
     api_key: str | None,
 ) -> dict[str, Any]:
-    """Profile all tbl__ tables, run deterministic + AI matching, return decisions."""
+    """Profile tables, run deterministic + AI matching, return decisions.
+
+    Prefers appended__ group tables when they exist (post-append workflow).
+    Falls back to tbl__ tables for pre-append usage.
+    """
     registered = all_registered_tables(conn)
-    tbl_entries = [
+    appended_entries = [
+        r for r in registered
+        if str(r.get("sql_name", "")).startswith("appended__")
+        and table_exists(conn, r["sql_name"])
+    ]
+    tbl_entries = appended_entries if appended_entries else [
         r for r in registered
         if str(r.get("sql_name", "")).startswith("tbl__")
         and table_exists(conn, r["sql_name"])
@@ -333,16 +342,28 @@ def apply_header_norm(
 
 
 def _resolve_tbl(conn: sqlite3.Connection, table_key: str) -> str | None:
-    """Find the tbl__ SQL name for a table_key (ignoring hn__ if already applied)."""
+    """Find the source SQL name for a table_key.
+
+    Prefers appended__ tables (group-level), then tbl__ (individual source).
+    Ignores hn__ tables if already applied.
+    """
     registered = all_registered_tables(conn)
     for r in registered:
         if r["table_key"] == table_key:
             name = r["sql_name"]
+            if name.startswith("appended__"):
+                return name
             if name.startswith("tbl__"):
                 return name
+            appended_name = safe_table_name("appended", table_key)
+            if table_exists(conn, appended_name):
+                return appended_name
             tbl_name = safe_table_name("tbl", table_key)
             if table_exists(conn, tbl_name):
                 return tbl_name
+    appended_name = safe_table_name("appended", table_key)
+    if table_exists(conn, appended_name):
+        return appended_name
     tbl_name = safe_table_name("tbl", table_key)
     if table_exists(conn, tbl_name):
         return tbl_name

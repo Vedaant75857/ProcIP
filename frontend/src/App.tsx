@@ -107,6 +107,7 @@ export default function App() {
   // Step 4: Header Normalisation
   const [headerNormDecisions, setHeaderNormDecisions] = useState<any>(null);
   const [headerNormStandardFields, setHeaderNormStandardFields] = useState<any[]>([]);
+  const [groupPreviewData, setGroupPreviewData] = useState<Record<string, { columns: string[]; rows: any[]; total_rows: number }>>({});
 
   // Step 5: Data Cleaning (per-table)
   const [cleaningConfigs, setCleaningConfigs] = useState<Record<string, any>>({});
@@ -197,6 +198,29 @@ export default function App() {
       if (insightsAbortRef.current === controller) insightsAbortRef.current = null;
     }
   }, [addLog]);
+
+  const fetchGroupPreviewForHeaderNorm = useCallback(async (groupIds: string[]) => {
+    if (!sessionId || groupIds.length === 0) return;
+    try {
+      const res = await fetch("/api/header-norm-group-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, groupIds, limit: 50 }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const previews = data.previews || [];
+      setGroupPreviewData((prev) => {
+        const next = { ...prev };
+        for (const p of previews) {
+          next[p.group_id] = { columns: p.columns || [], rows: p.rows || [], total_rows: p.total_rows || 0 };
+        }
+        return next;
+      });
+    } catch (err) {
+      console.error("Group preview fetch error:", err);
+    }
+  }, [sessionId]);
 
   const compatAbortRef = useRef<AbortController | null>(null);
 
@@ -544,6 +568,8 @@ export default function App() {
       setHeaderNormStandardFields(data.standardFields || []);
       const totalCols = (data.tables || []).reduce((s: number, t: any) => s + (t.decisions?.length || 0), 0);
       addLog("Header Normalisation", "success", `Mapped ${totalCols} columns across ${data.tables?.length || 0} table(s)`);
+      const normGroupIds = (data.tables || []).map((t: any) => t.tableKey);
+      if (normGroupIds.length > 0) fetchGroupPreviewForHeaderNorm(normGroupIds);
     } catch (err: any) {
       const message = err?.name === "AbortError" ? "Request cancelled." : err.message;
       setError(message);
@@ -1722,9 +1748,12 @@ export default function App() {
                     loading={loading}
                     decisions={headerNormDecisions}
                     standardFields={headerNormStandardFields}
+                    groupSchema={groupSchema}
+                    groupPreviewData={groupPreviewData}
                     onRun={handleHeaderNormRun}
                     onApply={handleHeaderNormApply}
                     onSkip={() => setStep(5)}
+                    onFetchGroupPreview={fetchGroupPreviewForHeaderNorm}
                   />
                 )}
 

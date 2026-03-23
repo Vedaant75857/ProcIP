@@ -8,7 +8,7 @@ from typing import Any
 
 import sqlite3
 
-from shared.db import column_stats, quote_id, read_table_columns, table_exists, table_row_count
+from shared.db import column_stats, get_meta, quote_id, read_table_columns, table_exists, table_row_count
 from shared.ai import call_ai_json
 
 
@@ -287,4 +287,202 @@ def run_analysis(
             "overall_assessment": str(profiler.get("dataDescription") or "Merged dataset quality summary"),
             "columns": usability_columns,
         },
+    }
+
+
+PROCUREMENT_ANALYSIS_PROMPT = """You are a procurement data analyst. Given the following computed statistics about a final merged procurement dataset, craft a clear and concise narrative summary.
+
+The data provided includes:
+- Date columns with their min/max date ranges
+- Local currency columns with unique currency values
+- Spend columns with totals broken down by currency
+
+Your response must be a JSON object with:
+{
+  "narrative": "A well-structured narrative summary (2-4 paragraphs) covering the data timeframe, currency coverage, and spend distribution. Use specific numbers.",
+  "highlights": ["List of 3-5 key highlights/observations about the data"],
+  "dataQualityNotes": ["Any concerns about data quality, gaps, or inconsistencies observed from the stats"]
+}
+"""
+
+
+def _detect_date_columns(conn: sqlite3.Connection, table_name: str, columns: list[str]) -> list[str]:
+    """Heuristic: columns whose names suggest dates or that have parseable date values."""
+    date_keywords = {"date", "dt", "period", "month", "year", "time", "timestamp", "invoice_date",
+                     "po_date", "order_date", "delivery_date", "payment_date", "created", "updated"}
+    candidates = []
+    for col in columns:
+        col_lower = col.lower().replace(" ", "_")
+        if any(kw in col_lower for kw in date_keywords):
+            candidates.append(col)
+    return candidates
+
+
+def _detect_currency_columns(columns: list[str]) -> list[str]:
+    currency_keywords = {"currency", "curr", "ccy", "local_currency", "doc_currency",
+                         "transaction_currency", "invoice_currency"}
+    return [c for c in columns if any(kw in c.lower().replace(" ", "_") for kw in currency_keywords)]
+
+
+def _detect_spend_columns(columns: list[str]) -> list[str]:
+    spend_keywords = {"spend", "amount", "value", "cost", "price", "total", "net_value",
+                      "gross_value", "invoice_amount", "po_value", "order_value"}
+    return [c for c in columns if any(kw in c.lower().replace(" ", "_") for kw in spend_keywords)]
+
+
+def run_procurement_analysis(
+    conn: sqlite3.Connection,
+    session_id: str,
+    api_key: str,
+) -> dict[str, Any]:
+    """Procurement-focused analysis: date ranges, currency uniques, spend pivots + AI narrative."""
+    _ = session_id
+    if not table_exists(conn, "final_merged"):
+        raise ValueError("No result table found. Complete the merge step first.")
+
+    tbl = quote_id("final_merged")
+    all_cols = read_table_columns(conn, "final_merged")
+    total_rows = table_row_count(conn, "final_merged")
+
+    header_decisions = get_meta(conn, "headerNormDecisions") or []
+    proc_mappings = get_meta(conn, "procMappings") or []
+
+    mapped_dates: list[str] = []
+    mapped_currencies: list[str] = []
+    mapped_spends: list[str] = []
+
+    for pm in proc_mappings:
+        if isinstance(pm, dict):
+            std = str(pm.get("standard_field") or "").lower()
+            col = str(pm.get("column") or pm.get("source_col") or "")
+            if col and col in all_cols:
+                if "date" in std:
+                    mapped_dates.append(col)
+                elif "currency" in std:
+                    mapped_currencies.append(col)
+                elif "spend" in std or "amount" in std or "value" in std:
+                    mapped_spends.append(col)
+
+    for tbl_dec in header_decisions:
+        if not isinstance(tbl_dec, dict):
+            continue
+        for d in tbl_dec.get("decisions") or []:
+            if not isinstance(d, dict):
+                continue
+            mapped = str(d.get("mapped_to") or d.get("suggested_std_field") or "").lower()
+            src = str(d.get("source_col") or "")
+            if src and src in all_cols:
+                if "date" in mapped and src not in mapped_dates:
+                    mapped_dates.append(src)
+                elif "currency" in mapped and src not in mapped_currencies:
+                    mapped_currencies.append(src)
+                elif ("spend" in mapped or "amount" in mapped or "value" in mapped) and src not in mapped_spends:
+                    mapped_spends.append(src)
+
+    if not mapped_dates:
+        mapped_dates = _detect_date_columns(conn, "final_merged", all_cols)
+    if not mapped_currencies:
+        mapped_currencies = _detect_currency_columns(all_cols)
+    if not mapped_spends:
+        mapped_spends = _detect_spend_columns(all_cols)
+
+    date_ranges: list[dict[str, Any]] = []
+    for col in mapped_dates:
+        qc = quote_id(col)
+        try:
+            row = conn.execute(
+                f"SELECT MIN(TRIM({qc})) AS min_val, MAX(TRIM({qc})) AS max_val "
+                f"FROM {quote_id('final_merged')} WHERE {qc} IS NOT NULL AND TRIM(CAST({qc} AS TEXT)) != ''"
+            ).fetchone()
+            if row:
+                date_ranges.append({
+                    "column": col,
+                    "min_date": str(row["min_val"] or ""),
+                    "max_date": str(row["max_val"] or ""),
+                })
+        except Exception:
+            pass
+
+    currency_uniques: list[dict[str, Any]] = []
+    for col in mapped_currencies:
+        qc = quote_id(col)
+        try:
+            rows = conn.execute(
+                f"SELECT DISTINCT TRIM(CAST({qc} AS TEXT)) AS val "
+                f"FROM {quote_id('final_merged')} WHERE {qc} IS NOT NULL AND TRIM(CAST({qc} AS TEXT)) != '' "
+                f"ORDER BY val LIMIT 200"
+            ).fetchall()
+            currency_uniques.append({
+                "column": col,
+                "values": [str(r["val"]) for r in rows],
+            })
+        except Exception:
+            pass
+
+    spend_by_currency: list[dict[str, Any]] = []
+    for spend_col in mapped_spends:
+        sq = quote_id(spend_col)
+        if mapped_currencies:
+            for curr_col in mapped_currencies:
+                cq = quote_id(curr_col)
+                try:
+                    rows = conn.execute(
+                        f"SELECT TRIM(CAST({cq} AS TEXT)) AS currency, "
+                        f"SUM(CAST({sq} AS REAL)) AS total_spend, "
+                        f"COUNT(*) AS row_count "
+                        f"FROM {quote_id('final_merged')} "
+                        f"WHERE {sq} IS NOT NULL AND TRIM(CAST({sq} AS TEXT)) != '' "
+                        f"GROUP BY TRIM(CAST({cq} AS TEXT)) "
+                        f"ORDER BY total_spend DESC"
+                    ).fetchall()
+                    spend_by_currency.append({
+                        "spend_column": spend_col,
+                        "currency_column": curr_col,
+                        "breakdown": [
+                            {"currency": str(r["currency"] or "N/A"), "total_spend": float(r["total_spend"] or 0), "row_count": int(r["row_count"])}
+                            for r in rows
+                        ],
+                    })
+                except Exception:
+                    pass
+        else:
+            try:
+                row = conn.execute(
+                    f"SELECT SUM(CAST({sq} AS REAL)) AS total_spend, COUNT(*) AS row_count "
+                    f"FROM {quote_id('final_merged')} WHERE {sq} IS NOT NULL AND TRIM(CAST({sq} AS TEXT)) != ''"
+                ).fetchone()
+                if row:
+                    spend_by_currency.append({
+                        "spend_column": spend_col,
+                        "currency_column": None,
+                        "breakdown": [{"currency": "ALL", "total_spend": float(row["total_spend"] or 0), "row_count": int(row["row_count"])}],
+                    })
+            except Exception:
+                pass
+
+    stats_payload = {
+        "totalRows": total_rows,
+        "totalColumns": len(all_cols),
+        "dateRanges": date_ranges,
+        "currencyUniques": currency_uniques,
+        "spendByCurrency": spend_by_currency,
+    }
+
+    ai_narrative: dict[str, Any] = {}
+    try:
+        ai_narrative = call_ai_json(PROCUREMENT_ANALYSIS_PROMPT, stats_payload, api_key=api_key)
+    except Exception:
+        ai_narrative = {
+            "narrative": "Unable to generate AI narrative at this time.",
+            "highlights": [],
+            "dataQualityNotes": [],
+        }
+
+    return {
+        "totalRows": total_rows,
+        "totalColumns": len(all_cols),
+        "dateRanges": date_ranges,
+        "currencyUniques": currency_uniques,
+        "spendByCurrency": spend_by_currency,
+        "aiNarrative": ai_narrative,
     }

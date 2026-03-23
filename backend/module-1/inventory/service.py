@@ -8,6 +8,8 @@ from typing import Any, Mapping
 from shared.db import (
     column_stats,
     drop_table,
+    get_meta,
+    lookup_sql_name,
     quote_id,
     read_table,
     read_table_columns,
@@ -136,6 +138,48 @@ def _deduplicate_rows(conn: sqlite3.Connection, table: str, dedup_cols: list[str
     return before - table_row_count(conn, table)
 
 
+def delete_rows_sql(
+    conn: sqlite3.Connection,
+    table_key: str,
+    row_ids: list[int],
+) -> dict[str, Any]:
+    """Delete specific rows by RECORD_ID (or rowid) from tbl__ and raw__ tables."""
+    tbl_sql = safe_table_name("tbl", table_key)
+    raw_sql = safe_table_name("raw", table_key)
+
+    if not table_exists(conn, tbl_sql):
+        raise ValueError(f'Table "{table_key}" not found.')
+
+    tbl_cols = read_table_columns(conn, tbl_sql)
+    use_record_id = "RECORD_ID" in tbl_cols
+
+    placeholders = ",".join("?" for _ in row_ids)
+    if use_record_id:
+        conn.execute(f"DELETE FROM {quote_id(tbl_sql)} WHERE RECORD_ID IN ({placeholders})", row_ids)
+        if table_exists(conn, raw_sql) and "RECORD_ID" in read_table_columns(conn, raw_sql):
+            conn.execute(f"DELETE FROM {quote_id(raw_sql)} WHERE RECORD_ID IN ({placeholders})", row_ids)
+    else:
+        conn.execute(f"DELETE FROM {quote_id(tbl_sql)} WHERE rowid IN ({placeholders})", row_ids)
+        if table_exists(conn, raw_sql):
+            conn.execute(f"DELETE FROM {quote_id(raw_sql)} WHERE rowid IN ({placeholders})", row_ids)
+    conn.commit()
+
+    inv = build_inventory_from_db(conn)
+    files_payload = build_files_payload_from_db(conn)
+    set_meta(conn, "inv", inv)
+    set_meta(conn, "filesPayload", files_payload)
+
+    out_cols = read_table_columns(conn, tbl_sql)
+    preview_rows = read_table(conn, tbl_sql, PREVIEW_ROWS)
+    inv_row = next((r for r in inv if r["table_key"] == table_key), None)
+
+    return {
+        "preview": {"columns": out_cols, "rows": preview_rows},
+        "inventoryRow": inv_row,
+        "deletedCount": len(row_ids),
+    }
+
+
 def clean_table_sql(
     conn: sqlite3.Connection,
     table_key: str,
@@ -218,5 +262,90 @@ def clean_table_sql(
     return {
         "preview": {"columns": out_cols, "rows": preview_rows},
         "inventoryRow": inv_row,
+        "duplicatesRemoved": duplicates_removed,
+    }
+
+
+def clean_group_sql(
+    conn: sqlite3.Connection,
+    group_id: str,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Clean an appended/hn group table in-place (post-normalisation cleaning)."""
+    source_sql = lookup_sql_name(conn, group_id)
+    if not source_sql or not table_exists(conn, source_sql):
+        raise ValueError(f'Group table "{group_id}" not found.')
+
+    remove_null_rows = bool(config.get("removeNullRows", False))
+    remove_null_columns = bool(config.get("removeNullColumns", False))
+    drop_columns = list(config.get("dropColumns") or [])
+    case_mode = str(config.get("caseMode") or "upper")
+    trim_whitespace = bool(config.get("trimWhitespace", True))
+    column_types = config.get("columnTypes") or {}
+    if not isinstance(column_types, Mapping):
+        column_types = {}
+    deduplicate_columns = list(config.get("deduplicateColumns") or [])
+
+    work = _work_name(group_id)
+    shadow = _shadow_name(group_id)
+
+    drop_table(conn, work)
+    drop_table(conn, shadow)
+    conn.execute(f"CREATE TABLE {quote_id(work)} AS SELECT * FROM {quote_id(source_sql)}")
+    conn.commit()
+
+    if drop_columns:
+        drop_set = set(drop_columns)
+        cols = read_table_columns(conn, work)
+        kept = [c for c in cols if c not in drop_set]
+        if not kept:
+            raise ValueError("Cannot drop all columns.")
+        select_list = ", ".join(quote_id(c) for c in kept)
+        _rebuild_from_select(conn, work, shadow, select_list)
+
+    if remove_null_rows:
+        cols = read_table_columns(conn, work)
+        _delete_null_or_empty_rows(conn, work, cols)
+
+    if remove_null_columns and table_row_count(conn, work) > 0:
+        stats = column_stats(conn, work)
+        kept = [s["column_name"] for s in stats if s.get("non_null_count", 0) > 0]
+        if not kept:
+            raise ValueError("All columns are empty; nothing to keep.")
+        select_list = ", ".join(quote_id(c) for c in kept)
+        _rebuild_from_select(conn, work, shadow, select_list)
+
+    cols = read_table_columns(conn, work)
+    _apply_case_and_trim(conn, work, cols, case_mode, trim_whitespace)
+
+    cols = read_table_columns(conn, work)
+    _apply_column_types(conn, work, column_types, cols)
+
+    duplicates_removed = _deduplicate_rows(conn, work, deduplicate_columns)
+
+    drop_table(conn, source_sql)
+    conn.execute(f"ALTER TABLE {quote_id(work)} RENAME TO {quote_id(source_sql)}")
+    conn.commit()
+    drop_table(conn, shadow)
+
+    register_table(conn, group_id, source_sql)
+
+    out_cols = read_table_columns(conn, source_sql)
+    n_rows = table_row_count(conn, source_sql)
+    preview_rows = read_table(conn, source_sql, PREVIEW_ROWS)
+
+    group_schema = get_meta(conn, "groupSchemaTableRows") or []
+    for gs in group_schema:
+        if gs.get("group_id") == group_id:
+            gs["rows"] = n_rows
+            gs["cols"] = len(out_cols)
+            gs["columns"] = out_cols
+            gs["columns_preview"] = ", ".join(out_cols[:60]) + (" ..." if len(out_cols) > 60 else "")
+            break
+    set_meta(conn, "groupSchemaTableRows", group_schema)
+
+    return {
+        "preview": {"columns": out_cols, "rows": preview_rows},
+        "groupRow": {"group_id": group_id, "rows": n_rows, "cols": len(out_cols), "columns": out_cols},
         "duplicatesRemoved": duplicates_removed,
     }

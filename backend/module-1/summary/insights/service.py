@@ -52,13 +52,22 @@ def _resolve_appended_map(conn: sqlite3.Connection) -> dict[str, str]:
     return out
 
 
-def resolve_group_table(conn: sqlite3.Connection, group_id: str) -> str | None:
+def resolve_group_table(
+    conn: sqlite3.Connection,
+    group_id: str,
+    group_tables: list[str] | None = None,
+) -> str | None:
     appended = _resolve_appended_map(conn)
     if group_id in appended:
         return appended[group_id]
     sql = lookup_sql_name(conn, group_id)
     if sql and table_exists(conn, sql):
         return sql
+    if group_tables:
+        for tk in group_tables:
+            sql = lookup_sql_name(conn, tk)
+            if sql and table_exists(conn, sql):
+                return sql
     return None
 
 
@@ -182,7 +191,7 @@ def run_insights(
         if not gid:
             continue
         tables: list[str] = list(group.get("tables") or [])
-        sql_name = resolve_group_table(conn, str(gid))
+        sql_name = resolve_group_table(conn, str(gid), group_tables=tables)
         if not sql_name or not table_exists(conn, sql_name):
             continue
 
@@ -420,7 +429,7 @@ def run_pre_merge_analysis(
         if not gid:
             continue
         tables = list(g.get("tables") or [])
-        sql_name = resolve_group_table(conn, str(gid))
+        sql_name = resolve_group_table(conn, str(gid), group_tables=tables)
         if not sql_name or not table_exists(conn, sql_name):
             continue
         group_sql_names[str(gid)] = sql_name

@@ -59,6 +59,7 @@ _hn_schema = _load_service("summary_header_norm_schema", os.path.join("..", "hea
 _hn_prompts = _load_service("summary_header_norm_prompts", os.path.join("..", "header-normalisation", "ai", "prompts.py"))
 
 run_analysis = _analysis.run_analysis
+run_procurement_analysis = _analysis.run_procurement_analysis
 detect_date_columns = _date_std.detect_date_columns
 analyze_date_formats = _date_std.analyze_date_formats
 standardize_dates = _date_std.standardize_dates
@@ -366,6 +367,27 @@ _OPERATION_SPECS: dict[str, dict[str, Any]] = {
         "auto_prereqs": ["append_execute"],
         "produces": ["table:final_merged"],
     },
+    "header_normalize": {
+        "required_inputs": [],
+        "required_artifacts": ["inv"],
+        "requires_api_key": True,
+        "auto_prereqs": [],
+        "produces": ["headerNormApplied"],
+    },
+    "append": {
+        "required_inputs": [],
+        "required_artifacts": ["filesPayload"],
+        "requires_api_key": True,
+        "auto_prereqs": [],
+        "produces": ["groupSchemaTableRows"],
+    },
+    "merge": {
+        "required_inputs": [],
+        "required_artifacts": ["groupSchemaTableRows"],
+        "requires_api_key": True,
+        "auto_prereqs": [],
+        "produces": ["table:final_merged"],
+    },
 }
 
 _OPERATION_INPUT_HINTS: dict[str, dict[str, Any]] = {
@@ -418,6 +440,16 @@ _OPERATION_INPUT_HINTS: dict[str, dict[str, Any]] = {
         "mainGroupId": {"type": "string", "required": True, "description": "Fact/main group id."},
         "dimensionGroupIds": {"type": "array", "required": True, "description": "Dimension group ids."},
         "dimColumnsToAdd": {"type": "object", "required": False, "description": "Per-dimension selected columns."},
+    },
+    "header_normalize": {
+        "tableKeys": {"type": "array", "required": False, "description": "Optional table keys to scope normalization."},
+    },
+    "append": {
+        "tableKeys": {"type": "array", "required": False, "description": "Optional table keys to scope append planning."},
+    },
+    "merge": {
+        "mainGroupId": {"type": "string", "required": False, "description": "Fact/main group id (auto-detected if omitted)."},
+        "dimensionGroupIds": {"type": "array", "required": False, "description": "Dimension group ids (auto-detected if omitted)."},
     },
 }
 
@@ -636,6 +668,48 @@ def _execute_operation(conn, session_id: str, operation: str, input_data: dict[s
             session_id,
             setup.get("mergeKeys") or [],
             api_key,
+            main_group_id=main_gid,
+            dim_columns_to_add=input_data.get("dimColumnsToAdd") or {},
+        )
+        if result.get("error"):
+            raise ValueError(str(result.get("error")))
+        merged = _build_merge_result_from_table(conn, str(result.get("final_table") or "final_merged"))
+        if merged:
+            result["report"] = merged["report"]
+            result["preview"] = merged["preview"]
+        return {"mergeSetup": setup, **result}
+
+    if operation == "header_normalize":
+        norm_result = run_header_norm(conn, api_key)
+        decisions = _auto_header_norm_decisions(conn)
+        if decisions:
+            apply_result = apply_header_norm(conn, decisions)
+            norm_result["applyResult"] = apply_result
+        return norm_result
+
+    if operation == "append":
+        _apply_preferred_files_payload(conn, input_data)
+        plan_result = run_append_plan(conn, api_key)
+        append_groups = plan_result.get("appendGroups") or []
+        if not append_groups:
+            return plan_result
+        mapping = run_append_mapping(conn, append_groups, api_key)
+        set_meta(conn, "appendGroupMappings", mapping.get("appendGroupMappings") or [])
+        executed = run_append_execute(conn, mapping.get("appendGroupMappings") or [], [])
+        return {**plan_result, "appendGroupMappings": mapping.get("appendGroupMappings"), **executed}
+
+    if operation == "merge":
+        schema = get_meta(conn, "groupSchemaTableRows") or []
+        by_rows = sorted(schema, key=lambda x: int(x.get("rows") or 0), reverse=True)
+        main_gid = input_data.get("mainGroupId") or (str(by_rows[0].get("group_id")) if by_rows else None)
+        dim_gids = input_data.get("dimensionGroupIds")
+        if dim_gids is None:
+            dim_gids = [str(r.get("group_id")) for r in by_rows[1:] if r.get("group_id")]
+        setup = run_merge_setup(conn, session_id, api_key, main_gid, dim_gids)
+        if setup.get("error"):
+            raise ValueError(str(setup.get("error")))
+        result = run_merge_execute(
+            conn, session_id, setup.get("mergeKeys") or [], api_key,
             main_group_id=main_gid,
             dim_columns_to_add=input_data.get("dimColumnsToAdd") or {},
         )
@@ -1033,6 +1107,26 @@ def date_standardize():
                 }
             )
         return jsonify({"columns": shaped, "results": results, "targetFormat": target_format})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+@summary_bp.route("/analysis/procurement-summary", methods=["POST"])
+def procurement_summary():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        api_key = body.get("apiKey")
+        if not session_id:
+            return jsonify({"error": "Missing sessionId"}), 400
+        if not (api_key and str(api_key).strip()):
+            return jsonify({"error": "Missing API key"}), 400
+        conn = get_session_db(session_id)
+        result = run_procurement_analysis(conn, session_id, str(api_key).strip())
+        set_meta(conn, "procurementAnalysis", result)
+        return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:  # noqa: BLE001

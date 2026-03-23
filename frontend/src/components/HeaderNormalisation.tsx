@@ -11,6 +11,7 @@ interface HeaderNormalisationProps {
   standardFields: any[];
   groupSchema: any[];
   groupPreviewData: Record<string, { columns: string[]; rows: any[]; total_rows: number }>;
+  groupNameMap?: Record<string, string>;
   onRun: () => void;
   onApply: (decisions: Record<string, any[]>) => void;
   onSkip: () => void;
@@ -375,6 +376,7 @@ export default function HeaderNormalisation({
   standardFields,
   groupSchema,
   groupPreviewData,
+  groupNameMap = {},
   onRun,
   onApply,
   onSkip,
@@ -581,7 +583,7 @@ export default function HeaderNormalisation({
                   <GroupPanel
                     key={groupKey}
                     groupId={groupKey}
-                    groupName={schema?.group_id || groupKey}
+                    groupName={groupNameMap[groupKey] || schema?.group_id || groupKey}
                     columns={cols}
                     rows={rows}
                     totalRows={total}

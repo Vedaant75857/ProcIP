@@ -29,12 +29,12 @@ type OperationId =
   | "merge_setup"
   | "merge_execute"
   | "analysis_run"
-  | "date_detect"
-  | "date_analyze"
-  | "date_standardize"
   | "procurement_mapping"
   | "append_datasets"
-  | "merge_datasets";
+  | "merge_datasets"
+  | "header_normalize"
+  | "append"
+  | "merge";
 
 function jsonSafeStringify(value: unknown): string {
   return JSON.stringify(value, (_key, currentValue) => {
@@ -94,6 +94,9 @@ export default function App() {
   const [inventory, setInventory] = useState<any[]>([]);
   const [previews, setPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
   const [showDataPreview, setShowDataPreview] = useState(false);
+  const [showResultsPreview, setShowResultsPreview] = useState(false);
+  const [resultsPreviews, setResultsPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
+  const [resultsInventory, setResultsInventory] = useState<any[]>([]);
   const [uploadWarnings, setUploadWarnings] = useState<{ file: string; message: string }[]>([]);
 
   // Step 3: Append Strategy (groups + mapping)
@@ -101,6 +104,13 @@ export default function App() {
   const [unassigned, setUnassigned] = useState<any[]>([]);
   const [excludedTables, setExcludedTables] = useState<string[]>([]);
   const [appendGroupMappings, setAppendGroupMappings] = useState<any[]>([]);
+  const groupNameMap: Record<string, string> = React.useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const g of appendGroups) {
+      if (g.group_id && g.group_name) map[g.group_id] = g.group_name;
+    }
+    return map;
+  }, [appendGroups]);
   const [groupSchema, setGroupSchema] = useState<any[]>([]);
   const [appendReport, setAppendReport] = useState<any[] | null>(null);
 
@@ -124,16 +134,6 @@ export default function App() {
   // Step 8: Analysis
   const [analysisResults, setAnalysisResults] = useState<any | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [analysisSelectedColumns, setAnalysisSelectedColumns] = useState<string[]>([]);
-
-  // Date Standardization
-  const [dateDetectResult, setDateDetectResult] = useState<any | null>(null);
-  const [dateDetectLoading, setDateDetectLoading] = useState(false);
-  const [dateAnalyzeResult, setDateAnalyzeResult] = useState<any | null>(null);
-  const [dateAnalyzeLoading, setDateAnalyzeLoading] = useState(false);
-  const [dateStandardizeResult, setDateStandardizeResult] = useState<any | null>(null);
-  const [dateStandardizeLoading, setDateStandardizeLoading] = useState(false);
-  const [dateSelectedColumns, setDateSelectedColumns] = useState<string[]>([]);
 
   // Step 9: Procurement Mapping
   const [procurementMappings, setProcurementMappings] = useState<any[]>([]);
@@ -157,11 +157,8 @@ export default function App() {
   // Chat
   const [chatOpen, setChatOpen] = useState(false);
   const [selectedChatItem, setSelectedChatItem] = useState<{ type: string; id: string; label: string } | null>(null);
-  const [modularOperation, setModularOperation] = useState<OperationId>("append_plan");
-  const [modularInputSource, setModularInputSource] = useState<"session" | "upload">("session");
-  const [modularUploadFile, setModularUploadFile] = useState<File | null>(null);
+  const [modularOperation, setModularOperation] = useState<OperationId>("header_normalize");
   const [modularSelectedTables, setModularSelectedTables] = useState<string[]>([]);
-  const [modularInputJson, setModularInputJson] = useState<string>("{}");
   const [modularLastResult, setModularLastResult] = useState<any>(null);
 
   const onSelectChatItem = useCallback((item: { type: string; id: string; label: string }) => {
@@ -282,7 +279,6 @@ export default function App() {
       if (s.crossGroupOverview) setCrossGroupOverview(s.crossGroupOverview);
       if (s.mergeCompatibility) setMergeCompatibility(s.mergeCompatibility);
       if (s.analysisResults) setAnalysisResults(s.analysisResults);
-      if (s.analysisSelectedColumns) setAnalysisSelectedColumns(s.analysisSelectedColumns);
       if (s.mainGroupId) setMainGroupId(s.mainGroupId);
       if (s.dimensionGroupIds) setDimensionGroupIds(s.dimensionGroupIds);
       if (s.mergeKeys) setMergeKeys(s.mergeKeys);
@@ -310,7 +306,7 @@ export default function App() {
         appendGroups, unassigned, excludedTables,
         appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
         mergeCompatibility,
-        analysisResults, analysisSelectedColumns,
+        analysisResults,
         mainGroupId, dimensionGroupIds,
         mergeKeys, dimColumnsToAdd,
         mergeResult: mergeResult ? { ...mergeResult, csv: undefined } : null,
@@ -328,7 +324,7 @@ export default function App() {
     appendGroups, unassigned, excludedTables,
     appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
     mergeCompatibility,
-    analysisResults, analysisSelectedColumns,
+    analysisResults,
     mainGroupId, dimensionGroupIds,
     mergeKeys, dimColumnsToAdd, mergeResult,
     procurementMappings, standardFields, viewCategories, viewRequirements,
@@ -366,9 +362,7 @@ export default function App() {
     if (patch.mainGroupId) setMainGroupId(patch.mainGroupId);
     if (patch.mergeResult) setMergeResult(patch.mergeResult);
     if (patch.analysisResults) setAnalysisResults(patch.analysisResults);
-    if (patch.dateDetectResult) setDateDetectResult(patch.dateDetectResult);
-    if (patch.dateAnalyzeResult) setDateAnalyzeResult(patch.dateAnalyzeResult);
-    if (patch.dateStandardizeResult) setDateStandardizeResult(patch.dateStandardizeResult);
+    // date state removed - procurement analysis replaces it
     if (patch.procurementMappings) setProcurementMappings(patch.procurementMappings);
     if (patch.standardFields) setStandardFields(patch.standardFields);
     if (patch.viewCategories) setViewCategories(patch.viewCategories);
@@ -501,6 +495,30 @@ export default function App() {
     }
   };
 
+  const handleDeleteRows = async (tableKey: string, rowIds: (string | number)[]) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/delete-rows", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, tableKey, rowIds }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to delete rows");
+      const data = await res.json();
+      if (data.preview) setPreviews((prev) => ({ ...prev, [tableKey]: data.preview }));
+      if (data.inventoryRow) {
+        setInventory((prev) => prev.map((inv) => inv.table_key === tableKey ? data.inventoryRow : inv));
+      }
+      addLog("Inventory", "success", `Deleted ${data.deletedCount || rowIds.length} row(s) from "${tableKey}"`);
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Inventory", "error", err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSetHeaderRow = async (tableKey: string, headerRowIndex: number, customColumnNames?: Record<number, string>) => {
     setLoading(true);
     setError(null);
@@ -546,6 +564,91 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleCleanGroup = async (groupId: string, config: any) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/clean-group", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, groupId, config }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to clean group");
+      const data = await res.json();
+      if (data.groupRow) {
+        setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
+      }
+      setCleaningConfigs((prev) => ({ ...prev, [groupId]: config }));
+      addLog("Data Cleaning", "success", `Cleaned group "${groupNameMap[groupId] || groupId}"`);
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Data Cleaning", "error", err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchResultsPreviews = async () => {
+    if (!sessionId) return;
+    try {
+      if (mergeResult) {
+        const res = await fetch("/api/group-preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, groupIds: ["final_merged"] }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.final_merged) {
+            setResultsPreviews({ final_merged: { columns: data.final_merged.columns, rows: data.final_merged.rows } });
+            setResultsInventory([{ table_key: "final_merged", rows: data.final_merged.total_rows || data.final_merged.rows.length, cols: data.final_merged.columns.length }]);
+          }
+        }
+      } else if (groupSchema.length > 0) {
+        const groupIds = groupSchema.map((g: any) => g.group_id);
+        let data: any = null;
+
+        const hnRes = await fetch("/api/header-norm-group-preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, groupIds }),
+        });
+        if (hnRes.ok) {
+          const hnData = await hnRes.json();
+          if (groupIds.some((gid: string) => hnData[gid])) {
+            data = hnData;
+          }
+        }
+
+        if (!data) {
+          const gpRes = await fetch("/api/group-preview", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, groupIds }),
+          });
+          if (gpRes.ok) {
+            data = await gpRes.json();
+          }
+        }
+
+        if (data) {
+          const newPreviews: Record<string, { columns: string[]; rows: any[] }> = {};
+          const newInv: any[] = [];
+          for (const gid of groupIds) {
+            if (data[gid]) {
+              const displayName = groupNameMap[gid] || gid;
+              newPreviews[displayName] = { columns: data[gid].columns, rows: data[gid].rows };
+              newInv.push({ table_key: displayName, rows: data[gid].total_rows || data[gid].rows.length, cols: data[gid].columns.length });
+            }
+          }
+          setResultsPreviews(newPreviews);
+          setResultsInventory(newInv);
+        }
+      }
+    } catch { /* ignore */ }
+    setShowResultsPreview(true);
   };
 
   const handleHeaderNormRun = async () => {
@@ -621,21 +724,22 @@ export default function App() {
       let finalGroups = data.appendGroups || [];
       let finalUnassigned = data.unassigned || [];
 
-      if (finalGroups.length === 0 && finalUnassigned.length > 0) {
+      if (finalUnassigned.length > 0) {
         const ts = Date.now();
-        finalGroups = finalUnassigned.map((u: any, i: number) => {
+        const autoGroups = finalUnassigned.map((u: any, i: number) => {
           const parts = String(u.table_key).split("::");
           const fileName = (parts[0] || "").split("/").pop() || `File ${i + 1}`;
           return {
             group_id: `auto_group_${i + 1}_${ts}`,
             group_name: fileName,
             tables: [u.table_key],
-            reason: "Auto-grouped (single file)",
+            reason: u.reason || "Auto-grouped (no matching tables found)",
           };
         });
+        finalGroups = [...finalGroups, ...autoGroups];
         finalUnassigned = [];
         syncGroupsToServer(finalGroups, finalUnassigned);
-        addLog("Append Plan", "info", `No groups from AI -- auto-created ${finalGroups.length} group(s)`);
+        addLog("Append Plan", "info", `Auto-created ${autoGroups.length} group(s) for unassigned tables`);
       }
 
       setAppendGroups(finalGroups);
@@ -653,18 +757,6 @@ export default function App() {
       setCrossGroupOverview(null);
       addLog("Append Plan", "success", `Created ${finalGroups.length} group(s), ${finalUnassigned.length} unassigned`);
       setStep(3);
-      if (finalGroups.length > 0 && apiKey?.trim()) {
-        fetchGroupInsights(sessionId, apiKey);
-
-        // Auto-run header alignment right after groups are created
-        setLoadingMessage("AI is aligning column headers across your groups...");
-        addLog("Append Mapping", "info", "AI aligning column headers across groups...");
-        if (controller.signal.aborted) throw new DOMException("Request cancelled.", "AbortError");
-        const mappingExec = await runOperation("append_mapping", { appendGroups: finalGroups }, { mode: "pipeline", autoPrepare: true, persist: true });
-        const mappingData = mappingExec?.result || {};
-        setAppendGroupMappings(mappingData.appendGroupMappings || []);
-        addLog("Append Mapping", "success", `Mappings generated for ${(mappingData.appendGroupMappings || []).length} group(s)`);
-      }
     } catch (err: any) {
       const message = err?.name === "AbortError" ? "Request cancelled. Please try again." : err.message;
       setError(message);
@@ -1016,110 +1108,30 @@ export default function App() {
     }
   };
 
-  const analysisAbortRef = useRef<AbortController | null>(null);
+  // analysisAbortRef removed - no longer needed for procurement analysis
 
-  const handleRunAnalysis = useCallback(async (selectedCols?: string[]) => {
-    const cols = selectedCols || analysisSelectedColumns;
-    if (!apiKey?.trim() || cols.length === 0) return;
-    analysisAbortRef.current?.abort();
-    const controller = new AbortController();
-    analysisAbortRef.current = controller;
+  const handleRunAnalysis = useCallback(async () => {
+    if (!apiKey?.trim()) return;
     setAnalysisLoading(true);
     setAnalysisResults(null);
-    addLog("Analysis", "info", `Running 3 parallel AI analyses on ${cols.length} column(s)...`);
+    addLog("Analysis", "info", "Running procurement analysis...");
     try {
-      if (controller.signal.aborted) throw new DOMException("Request cancelled.", "AbortError");
-      const exec = await runOperation(
-        "analysis_run",
-        { columns: cols },
-        { mode: "pipeline", autoPrepare: true, persist: true },
-      );
-      const data = exec?.result || {};
+      const res = await fetch("/api/analysis/procurement-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, apiKey }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Analysis failed");
+      const data = await res.json();
       setAnalysisResults(data);
-      addLog("Analysis", "success", "All 3 analyses completed");
+      addLog("Analysis", "success", "Procurement analysis completed");
     } catch (err: any) {
-      if (err.name === "AbortError") return;
       console.error("Analysis error:", err);
       addLog("Analysis", "error", err.message);
     } finally {
       setAnalysisLoading(false);
-      if (analysisAbortRef.current === controller) analysisAbortRef.current = null;
-    }
-  }, [sessionId, apiKey, analysisSelectedColumns, addLog]);
-
-  const handleDateDetect = useCallback(async () => {
-    if (!apiKey?.trim()) return;
-    setDateDetectLoading(true);
-    setDateDetectResult(null);
-    setDateAnalyzeResult(null);
-    setDateStandardizeResult(null);
-    setDateSelectedColumns([]);
-    addLog("Date Standardization", "info", "Detecting date columns...");
-    try {
-      const exec = await runOperation(
-        "date_detect",
-        {},
-        { mode: "pipeline", autoPrepare: true, persist: true },
-      );
-      const data = exec?.result || {};
-      setDateDetectResult(data);
-      const count = data.dateColumns?.length ?? 0;
-      addLog("Date Standardization", "success", `Detected ${count} date column(s)`);
-      if (count > 0) {
-        setDateSelectedColumns(data.dateColumns.filter((c: any) => c.confidence >= 70).map((c: any) => c.column));
-      }
-    } catch (err: any) {
-      addLog("Date Standardization", "error", err.message);
-    } finally {
-      setDateDetectLoading(false);
     }
   }, [sessionId, apiKey, addLog]);
-
-  const handleDateAnalyze = useCallback(async (cols?: string[]) => {
-    const columns = cols || dateSelectedColumns;
-    if (!apiKey?.trim() || columns.length === 0) return;
-    setDateAnalyzeLoading(true);
-    setDateAnalyzeResult(null);
-    setDateStandardizeResult(null);
-    addLog("Date Standardization", "info", `Analyzing formats for ${columns.length} column(s)...`);
-    try {
-      const exec = await runOperation(
-        "date_analyze",
-        { columns },
-        { mode: "pipeline", autoPrepare: true, persist: true },
-      );
-      const data = exec?.result || {};
-      setDateAnalyzeResult(data);
-      addLog("Date Standardization", "success", "Format analysis complete");
-    } catch (err: any) {
-      addLog("Date Standardization", "error", err.message);
-    } finally {
-      setDateAnalyzeLoading(false);
-    }
-  }, [sessionId, apiKey, dateSelectedColumns, addLog]);
-
-  const handleDateStandardize = useCallback(async (cols?: string[]) => {
-    const columns = cols || dateSelectedColumns;
-    if (columns.length === 0) return;
-    setDateStandardizeLoading(true);
-    setDateStandardizeResult(null);
-    addLog("Date Standardization", "info", `Standardizing ${columns.length} column(s) to DD/MM/YYYY...`);
-    try {
-      const exec = await runOperation(
-        "date_standardize",
-        { columns, targetFormat: "DD/MM/YYYY" },
-        { mode: "pipeline", autoPrepare: true, persist: true },
-      );
-      const data = exec?.result || {};
-      setDateStandardizeResult(data);
-      const totalConverted = data.columns?.reduce((s: number, c: any) => s + (c.converted || 0), 0) ?? 0;
-      addLog("Date Standardization", "success", `Standardized ${totalConverted} date values`);
-    } catch (err: any) {
-      addLog("Date Standardization", "error", err.message);
-    } finally {
-      setDateStandardizeLoading(false);
-    }
-  }, [sessionId, dateSelectedColumns, addLog]);
 
   const handleGenerateProcurementMapping = async () => {
     if (!apiKey?.trim()) {
@@ -1203,26 +1215,16 @@ export default function App() {
     setStep(10);
   };
 
-  const modularOperations: Array<{ id: OperationId; label: string; requiresApi: boolean; supportsTableSelection?: boolean }> = [
-    { id: "header_norm_run", label: "Header Normalize (Run)", requiresApi: true },
-    { id: "header_norm_apply", label: "Header Normalize (Apply)", requiresApi: false },
-    { id: "append_plan", label: "Append Plan", requiresApi: true, supportsTableSelection: true },
-    { id: "append_mapping", label: "Append Mapping", requiresApi: true },
-    { id: "append_execute", label: "Append Execute", requiresApi: false },
-    { id: "append_datasets", label: "Append Datasets", requiresApi: true, supportsTableSelection: true },
-    { id: "merge_setup", label: "Merge Setup", requiresApi: true },
-    { id: "merge_execute", label: "Merge Execute", requiresApi: false },
-    { id: "merge_datasets", label: "Merge Datasets", requiresApi: true },
-    { id: "analysis_run", label: "Analysis", requiresApi: true },
-    { id: "date_detect", label: "Date Detect", requiresApi: false },
-    { id: "date_analyze", label: "Date Analyze", requiresApi: false },
-    { id: "date_standardize", label: "Date Standardize", requiresApi: false },
-    { id: "procurement_mapping", label: "Procurement Mapping", requiresApi: true },
+  const modularOperations: Array<{ id: OperationId; label: string; description: string; requiresApi: boolean; supportsTableSelection?: boolean }> = [
+    { id: "header_normalize", label: "Header Normalisation", description: "AI normalises column headers across selected tables", requiresApi: true, supportsTableSelection: true },
+    { id: "append", label: "Append Strategy", description: "AI groups, aligns headers, and appends selected tables", requiresApi: true, supportsTableSelection: true },
+    { id: "merge", label: "Merge", description: "AI identifies join keys and merges appended groups", requiresApi: true },
+    { id: "analysis_run", label: "Analysis", description: "AI analyses the final merged dataset", requiresApi: true },
   ];
 
   const handleModularExecute = async () => {
-    if (!sessionId && modularInputSource === "session") {
-      setError("No active session. Upload data first or choose upload source.");
+    if (!sessionId) {
+      setError("No active session. Upload data first.");
       return;
     }
     const opInfo = modularOperations.find((o) => o.id === modularOperation);
@@ -1232,33 +1234,20 @@ export default function App() {
     }
     setLoading(true);
     setAiLoading(Boolean(opInfo?.requiresApi));
-    setLoadingMessage(`Executing ${modularOperation}...`);
+    setLoadingMessage(`Running ${opInfo?.label || modularOperation}...`);
     setError(null);
     try {
-      let parsedInput: Record<string, any> = {};
-      if (modularInputJson?.trim()) {
-        parsedInput = JSON.parse(modularInputJson);
-      }
+      const parsedInput: Record<string, any> = {};
       if (modularSelectedTables.length > 0) {
-        if (!parsedInput.tableKeys && (modularOperation === "append_plan" || modularOperation === "append_datasets")) {
-          parsedInput.tableKeys = modularSelectedTables;
-        }
+        parsedInput.tableKeys = modularSelectedTables;
       }
       const exec = await runOperation(
         modularOperation,
         parsedInput,
-        {
-          mode: "modular",
-          autoPrepare: true,
-          persist: true,
-          directUploadFile: modularInputSource === "upload" ? modularUploadFile : null,
-        },
+        { mode: "modular", autoPrepare: true, persist: true },
       );
       setModularLastResult(exec);
-      addLog("Modular", "success", `${modularOperation} executed successfully`);
-      if (modularInputSource === "upload") {
-        setModularUploadFile(null);
-      }
+      addLog("Modular", "success", `${opInfo?.label || modularOperation} completed successfully`);
     } catch (err: any) {
       setError(err.message || "Modular operation failed.");
       addLog("Modular", "error", err.message || "Operation failed");
@@ -1409,19 +1398,20 @@ export default function App() {
             </>
           ) : (
             <>
-              <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500 font-semibold mb-3 px-2">Modular Ops</p>
+              <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500 font-semibold mb-3 px-2">Operations</p>
               <div className="space-y-1 px-1">
-                {modularOperations.slice(0, 8).map((op) => (
+                {modularOperations.map((op) => (
                   <button
                     key={op.id}
                     onClick={() => setModularOperation(op.id)}
-                    className={`w-full text-left px-3 py-2 rounded-xl text-xs font-medium transition-colors ${
+                    className={`w-full text-left px-3 py-2.5 rounded-xl text-xs transition-colors ${
                       modularOperation === op.id
                         ? "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800"
                         : "text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 border border-transparent"
                     }`}
                   >
-                    {op.label}
+                    <div className="font-semibold">{op.label}</div>
+                    <div className="text-[10px] opacity-60 mt-0.5">{op.description}</div>
                   </button>
                 ))}
               </div>
@@ -1502,122 +1492,126 @@ export default function App() {
               <div className="space-y-4">
                 <div className="rounded-3xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-sm p-6">
                   <h2 className="text-lg font-semibold text-neutral-900 dark:text-white mb-1">Modular Execution</h2>
-                  <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-4">
-                    Run any stitching operation independently. Outputs are persisted and remain pipeline-compatible.
+                  <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-5">
+                    Run any pipeline step independently on your session data.
                   </p>
-                  <div className="space-y-3">
-                    <p className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">Operation</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
-                      {modularOperations.map((op) => (
-                        <button
-                          key={op.id}
-                          type="button"
-                          onClick={() => setModularOperation(op.id)}
-                          className={[
-                            "text-left rounded-xl border px-3 py-2 text-xs transition-colors",
-                            modularOperation === op.id
-                              ? "border-red-500 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300"
-                              : "border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 hover:border-red-300",
-                          ].join(" ")}
-                        >
-                          <div className="font-semibold">{op.label}</div>
-                          <div className="mt-1 opacity-70">{op.requiresApi ? "Requires API key" : "No API key required"}</div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-                    <label className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
-                      Input Source
-                      <select
-                        value={modularInputSource}
-                        onChange={(e) => setModularInputSource(e.target.value as "session" | "upload")}
-                        className="mt-1 w-full border border-neutral-200 dark:border-neutral-700 rounded-xl px-3 py-2 bg-white dark:bg-neutral-900 text-sm"
+
+                  {/* Operation cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-5">
+                    {modularOperations.map((op) => (
+                      <button
+                        key={op.id}
+                        type="button"
+                        onClick={() => setModularOperation(op.id)}
+                        className={[
+                          "text-left rounded-xl border px-4 py-3 text-xs transition-all",
+                          modularOperation === op.id
+                            ? "border-red-500 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 ring-1 ring-red-200 dark:ring-red-800"
+                            : "border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 hover:border-red-300",
+                        ].join(" ")}
                       >
-                        <option value="session">Session</option>
-                        <option value="upload">Upload + Run</option>
-                      </select>
-                    </label>
+                        <div className="font-bold">{op.label}</div>
+                        <div className="mt-0.5 opacity-60 text-[11px]">{op.description}</div>
+                      </button>
+                    ))}
                   </div>
+
+                  {/* Table selection */}
                   {modularOperations.find((op) => op.id === modularOperation)?.supportsTableSelection && (
-                    <div className="mt-4">
-                      <label className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 block mb-2">
-                        Dataset / Tables
-                      </label>
-                      <div className="max-h-36 overflow-auto rounded-xl border border-neutral-200 dark:border-neutral-700 p-2 space-y-1">
-                        {inventory.length === 0 && (
-                          <p className="text-xs text-neutral-500">No session tables available yet.</p>
-                        )}
-                        {inventory.map((row: any, idx: number) => {
-                          const tableKey = String(row?.table_key || row?.tableKey || row?.name || row?.id || `table_${idx}`);
-                          const checked = modularSelectedTables.includes(tableKey);
-                          return (
-                            <label key={tableKey} className="flex items-center gap-2 text-xs text-neutral-700 dark:text-neutral-300">
+                    <div className="mb-5">
+                      <p className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 mb-2">
+                        Select Tables
+                      </p>
+                      <div className="max-h-48 overflow-auto rounded-xl border border-neutral-200 dark:border-neutral-700 p-2.5 space-y-1">
+                        {inventory.length === 0 ? (
+                          <p className="text-xs text-neutral-400 italic">No session tables. Upload data first via Pipeline mode.</p>
+                        ) : (
+                          <>
+                            <label className="flex items-center gap-2 text-xs font-semibold text-neutral-600 dark:text-neutral-300 pb-1 border-b border-neutral-100 dark:border-neutral-800 mb-1 cursor-pointer">
                               <input
                                 type="checkbox"
-                                checked={checked}
+                                checked={modularSelectedTables.length === inventory.length && inventory.length > 0}
                                 onChange={(e) => {
-                                  const on = e.target.checked;
-                                  setModularSelectedTables((prev) =>
-                                    on ? [...prev, tableKey] : prev.filter((t) => t !== tableKey),
-                                  );
+                                  if (e.target.checked) {
+                                    setModularSelectedTables(inventory.map((row: any, idx: number) => String(row?.table_key || row?.tableKey || row?.name || row?.id || `table_${idx}`)));
+                                  } else {
+                                    setModularSelectedTables([]);
+                                  }
                                 }}
                               />
-                              <span>{tableKey}</span>
+                              Select All ({inventory.length})
                             </label>
-                          );
-                        })}
+                            {inventory.map((row: any, idx: number) => {
+                              const tableKey = String(row?.table_key || row?.tableKey || row?.name || row?.id || `table_${idx}`);
+                              const checked = modularSelectedTables.includes(tableKey);
+                              return (
+                                <label key={tableKey} className="flex items-center gap-2 text-xs text-neutral-700 dark:text-neutral-300 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800 rounded px-1 py-0.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={(e) => {
+                                      const on = e.target.checked;
+                                      setModularSelectedTables((prev) =>
+                                        on ? [...prev, tableKey] : prev.filter((t) => t !== tableKey),
+                                      );
+                                    }}
+                                  />
+                                  <span className="truncate">{tableKey}</span>
+                                </label>
+                              );
+                            })}
+                          </>
+                        )}
                       </div>
                     </div>
                   )}
-                  {modularInputSource === "upload" && (
-                    <div className="mt-4">
-                      <label className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
-                        Upload File
-                        <input
-                          type="file"
-                          onChange={(e) => setModularUploadFile(e.target.files?.[0] || null)}
-                          className="mt-1 w-full border border-neutral-200 dark:border-neutral-700 rounded-xl px-3 py-2 bg-white dark:bg-neutral-900 text-sm"
-                          accept=".zip"
-                        />
-                      </label>
-                    </div>
-                  )}
-                  <div className="mt-4">
-                    <label className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
-                      Input JSON
-                      <textarea
-                        value={modularInputJson}
-                        onChange={(e) => setModularInputJson(e.target.value)}
-                        className="mt-1 w-full min-h-[120px] border border-neutral-200 dark:border-neutral-700 rounded-xl px-3 py-2 bg-white dark:bg-neutral-900 text-xs font-mono"
-                        placeholder='{"columns":["INVOICE_DATE"]}'
-                      />
-                    </label>
-                  </div>
-                  <div className="mt-4 flex items-center gap-2">
+
+                  {/* Action buttons */}
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => { void handleModularExecute(); }}
-                      disabled={loading}
-                      className="px-4 py-2 rounded-xl text-xs font-semibold bg-red-600 text-white hover:bg-red-700 disabled:opacity-60"
+                      disabled={loading || !sessionId}
+                      className="px-5 py-2.5 rounded-xl text-xs font-bold bg-red-600 text-white hover:bg-red-700 disabled:opacity-60 transition-colors"
                     >
-                      Execute Operation
+                      {loading ? "Running..." : `Run ${modularOperations.find(o => o.id === modularOperation)?.label || "Operation"}`}
                     </button>
                     <button
                       type="button"
                       onClick={() => setStitchingMode("pipeline")}
-                      className="px-4 py-2 rounded-xl text-xs font-semibold border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300"
+                      className="px-4 py-2.5 rounded-xl text-xs font-semibold border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
                     >
                       Switch To Pipeline
                     </button>
                   </div>
+
+                  {!sessionId && (
+                    <p className="mt-3 text-xs text-amber-600 dark:text-amber-400 font-medium">
+                      No active session. Switch to Pipeline mode and upload data first.
+                    </p>
+                  )}
                 </div>
 
+                {/* Result display */}
                 {modularLastResult && (
                   <div className="rounded-3xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-sm p-6">
-                    <h3 className="text-sm font-semibold text-neutral-900 dark:text-white mb-2">Last Result</h3>
-                    <pre className="text-[11px] overflow-auto max-h-[300px] bg-neutral-50 dark:bg-neutral-800 rounded-xl p-3 border border-neutral-200 dark:border-neutral-700">
-                      {JSON.stringify(modularLastResult, null, 2)}
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Result</h3>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${modularLastResult?.ok ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400" : "bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400"}`}>
+                        {modularLastResult?.ok ? "Success" : "Error"}
+                      </span>
+                    </div>
+                    {modularLastResult?.ok && modularLastResult?.metrics && (
+                      <div className="flex gap-3 mb-3 flex-wrap">
+                        {Object.entries(modularLastResult.metrics as Record<string, any>).map(([op, m]: [string, any]) => (
+                          <span key={op} className="text-[10px] bg-neutral-100 dark:bg-neutral-800 px-2 py-1 rounded-lg text-neutral-500 dark:text-neutral-400">
+                            {op}: {m?.duration_ms}ms
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <pre className="text-[11px] overflow-auto max-h-[400px] bg-neutral-50 dark:bg-neutral-800 rounded-xl p-3 border border-neutral-200 dark:border-neutral-700">
+                      {JSON.stringify(modularLastResult?.result || modularLastResult, null, 2)}
                     </pre>
                   </div>
                 )}
@@ -1632,9 +1626,20 @@ export default function App() {
                   whileTap={{ scale: 0.95 }}
                   onClick={() => setShowDataPreview(true)}
                   className="p-2.5 rounded-xl bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shadow-sm backdrop-blur-sm text-neutral-600 dark:text-neutral-300 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                  title="Preview all tables"
+                  title="Raw Data Preview"
                 >
                   <Table2 className="w-4 h-4" />
+                </motion.button>
+              )}
+              {(groupSchema.length > 0 || mergeResult) && (
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={fetchResultsPreviews}
+                  className="p-2.5 rounded-xl bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shadow-sm backdrop-blur-sm text-neutral-600 dark:text-neutral-300 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+                  title="Results Preview"
+                >
+                  <Database className="w-4 h-4" />
                 </motion.button>
               )}
               <motion.button
@@ -1711,6 +1716,7 @@ export default function App() {
                   onDeleteTable={handleDeleteTable}
                   onSetHeaderRow={handleSetHeaderRow}
                   onSelectChatItem={onSelectChatItem}
+                  onDeleteRows={handleDeleteRows}
                 />
 
                 {step === 3 && (
@@ -1733,11 +1739,6 @@ export default function App() {
                     appendReport={appendReport}
                     handleProceedToMerge={handleProceedToMerge}
                     onSelectChatItem={onSelectChatItem}
-                    groupInsights={groupInsights}
-                    groupReports={groupReports}
-                    crossGroupOverview={crossGroupOverview}
-                    groupInsightsLoading={groupInsightsLoading}
-                    onRetryInsights={() => fetchGroupInsights(sessionId, apiKey)}
                   />
                 )}
 
@@ -1750,6 +1751,7 @@ export default function App() {
                     standardFields={headerNormStandardFields}
                     groupSchema={groupSchema}
                     groupPreviewData={groupPreviewData}
+                    groupNameMap={groupNameMap}
                     onRun={handleHeaderNormRun}
                     onApply={handleHeaderNormApply}
                     onSkip={() => setStep(5)}
@@ -1759,11 +1761,12 @@ export default function App() {
 
                 <DataCleaning
                   step={step}
-                  inventory={inventory}
-                  previews={previews}
+                  groupSchema={groupSchema}
+                  groupNameMap={groupNameMap}
+                  sessionId={sessionId}
                   cleaningConfigs={cleaningConfigs}
                   loading={loading}
-                  onCleanTable={handleCleanTable}
+                  onCleanGroup={handleCleanGroup}
                   onProceed={() => setStep(6)}
                   onSkip={() => setStep(6)}
                 />
@@ -1782,6 +1785,7 @@ export default function App() {
                         sessionId={sessionId}
                         step={step}
                         groupSchema={groupSchema}
+                        groupNameMap={groupNameMap}
                         mainGroupId={mainGroupId}
                         setMainGroupId={handleSetMainGroupId}
                         dimensionGroupIds={dimensionGroupIds}
@@ -1816,21 +1820,8 @@ export default function App() {
                     mergeResult={mergeResult}
                     analysisResults={analysisResults}
                     analysisLoading={analysisLoading}
-                    analysisSelectedColumns={analysisSelectedColumns}
-                    setAnalysisSelectedColumns={setAnalysisSelectedColumns}
                     handleRunAnalysis={handleRunAnalysis}
                     onProceedToProcurement={() => setStep(9)}
-                    dateDetectResult={dateDetectResult}
-                    dateDetectLoading={dateDetectLoading}
-                    dateAnalyzeResult={dateAnalyzeResult}
-                    dateAnalyzeLoading={dateAnalyzeLoading}
-                    dateStandardizeResult={dateStandardizeResult}
-                    dateStandardizeLoading={dateStandardizeLoading}
-                    dateSelectedColumns={dateSelectedColumns}
-                    setDateSelectedColumns={setDateSelectedColumns}
-                    handleDateDetect={handleDateDetect}
-                    handleDateAnalyze={handleDateAnalyze}
-                    handleDateStandardize={handleDateStandardize}
                   />
                 )}
 
@@ -1896,6 +1887,16 @@ export default function App() {
           previews={previews}
           inventory={inventory}
           onClose={() => setShowDataPreview(false)}
+          title="Raw Data Preview"
+        />
+      )}
+
+      {showResultsPreview && (
+        <DataPreviewOverlay
+          previews={resultsPreviews}
+          inventory={resultsInventory}
+          onClose={() => setShowResultsPreview(false)}
+          title="Results Preview"
         />
       )}
     </div>

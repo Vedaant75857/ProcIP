@@ -9,6 +9,7 @@ interface MergingProps {
   sessionId: string;
   step: number;
   groupSchema: any[];
+  groupNameMap?: Record<string, string>;
   mainGroupId: string;
   setMainGroupId: (id: string) => void;
   dimensionGroupIds: string[];
@@ -38,6 +39,7 @@ export default function Merging({
   sessionId,
   step,
   groupSchema,
+  groupNameMap = {},
   mainGroupId,
   setMainGroupId,
   dimensionGroupIds,
@@ -61,6 +63,7 @@ export default function Merging({
   compatibilityLoading = false,
   handleMergeCompatibility,
 }: MergingProps) {
+  const gn = (id: string) => groupNameMap[id] || id;
   const [previewTarget, setPreviewTarget] = useState<{
     factGroupId: string;
     dimGroupId: string;
@@ -147,7 +150,7 @@ export default function Merging({
                         <option value="">-- Select Fact Table --</option>
                         {groupSchema.map((g) => (
                           <option key={g.group_id} value={g.group_id}>
-                            {g.group_id} ({g.rows.toLocaleString()} rows)
+                            {gn(g.group_id)} ({g.rows.toLocaleString()} rows)
                           </option>
                         ))}
                       </select>
@@ -184,7 +187,7 @@ export default function Merging({
                               />
                             </div>
                             <div className="ml-3 flex-1">
-                              <p className="text-sm font-semibold text-neutral-700 dark:text-neutral-300 group-hover:text-red-600 dark:group-hover:text-red-400 transition-colors">{g.group_id}</p>
+                              <p className="text-sm font-semibold text-neutral-700 dark:text-neutral-300 group-hover:text-red-600 dark:group-hover:text-red-400 transition-colors">{gn(g.group_id)}</p>
                               <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-medium uppercase tracking-tighter">{g.rows.toLocaleString()} rows • {g.columns.length} columns</p>
                             </div>
                           </label>
@@ -257,7 +260,7 @@ export default function Merging({
                             <div key={result.dim_group_id} className={`border rounded-xl p-4 ${actionColors[action] || actionColors.skip}`}>
                               <div className="flex items-center justify-between mb-2">
                                 <div className="flex items-center gap-2">
-                                  <span className="text-sm font-bold text-neutral-900 dark:text-white">{result.dim_group_id}</span>
+                                  <span className="text-sm font-bold text-neutral-900 dark:text-white">{gn(result.dim_group_id)}</span>
                                   <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${badgeColors[action] || badgeColors.skip}`}>
                                     {action}
                                   </span>
@@ -375,7 +378,7 @@ export default function Merging({
                           <div className="flex justify-between items-center mb-6">
                             <div className="flex items-center gap-2">
                               <div>
-                                <h3 className="font-bold text-neutral-900 dark:text-white">{mk.dimension_group}</h3>
+                                <h3 className="font-bold text-neutral-900 dark:text-white">{gn(mk.dimension_group)}</h3>
                                 <p className="text-[10px] text-neutral-400 dark:text-neutral-500 uppercase font-bold tracking-wider">Dimension Table</p>
                               </div>
                               <button
@@ -648,7 +651,7 @@ export default function Merging({
                             </div>
                           )}
                           <div className="flex justify-between items-center gap-3">
-                            <h3 className="font-bold text-neutral-900 dark:text-white">{mk.dimension_group}</h3>
+                            <h3 className="font-bold text-neutral-900 dark:text-white">{gn(mk.dimension_group)}</h3>
                             <div className="flex items-center gap-2">
                               <button
                                 type="button"

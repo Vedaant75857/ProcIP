@@ -95,6 +95,21 @@ def run_append_plan(conn: sqlite3.Connection, api_key: str | None) -> dict[str, 
         unassigned.extend(p.get("unassigned") or [])
         notes.extend(p.get("notes") or [])
 
+    for u in list(unassigned):
+        tk = u.get("table_key") if isinstance(u, dict) else str(u)
+        if not tk:
+            continue
+        parts = str(tk).split("::")
+        display_name = (parts[0] or "").rsplit("/", 1)[-1] or tk
+        append_groups.append({
+            "group_id": f"auto_{gid}",
+            "group_name": display_name,
+            "tables": [tk],
+            "reason": (u.get("reason") if isinstance(u, dict) else None) or "Auto-grouped (no matching tables found)",
+        })
+        gid += 1
+    unassigned = []
+
     set_meta(conn, "appendGroups", append_groups)
     set_meta(conn, "unassigned", unassigned)
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Loader2, Sparkles, ArrowRight, Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
 import { motion } from "motion/react";
 import { PrimaryButton, SecondaryButton } from "./ui";
@@ -25,49 +25,74 @@ const DEFAULT_CONFIG: CleaningConfig = {
 
 interface DataCleaningProps {
   step: number;
-  inventory: any[];
-  previews: Record<string, { columns: string[]; rows: any[] }>;
+  groupSchema: any[];
+  groupNameMap?: Record<string, string>;
+  sessionId: string;
   cleaningConfigs: Record<string, any>;
   loading: boolean;
-  onCleanTable: (tableKey: string, config: CleaningConfig) => Promise<void>;
+  onCleanGroup: (groupId: string, config: CleaningConfig) => Promise<void>;
   onProceed: () => void;
   onSkip: () => void;
 }
 
 export default function DataCleaning({
   step,
-  inventory,
-  previews,
+  groupSchema,
+  groupNameMap = {},
+  sessionId,
   cleaningConfigs,
   loading,
-  onCleanTable,
+  onCleanGroup,
   onProceed,
   onSkip,
 }: DataCleaningProps) {
-  const [selectedTable, setSelectedTable] = useState<string | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [localConfig, setLocalConfig] = useState<CleaningConfig>(DEFAULT_CONFIG);
   const [expandedPreview, setExpandedPreview] = useState(true);
+  const [groupPreviews, setGroupPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
 
   useEffect(() => {
-    if (inventory.length > 0 && !selectedTable) {
-      setSelectedTable(inventory[0].table_key);
+    if (groupSchema.length > 0 && !selectedGroup) {
+      setSelectedGroup(groupSchema[0].group_id);
     }
-  }, [inventory, selectedTable]);
+  }, [groupSchema, selectedGroup]);
+
+  const fetchGroupPreview = useCallback(async (groupId: string) => {
+    if (!sessionId || groupPreviews[groupId]) return;
+    try {
+      const res = await fetch("/api/header-norm-group-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, groupIds: [groupId] }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data[groupId]) {
+          setGroupPreviews((prev) => ({ ...prev, [groupId]: { columns: data[groupId].columns, rows: data[groupId].rows } }));
+        }
+      }
+    } catch { /* ignore preview fetch errors */ }
+  }, [sessionId, groupPreviews]);
 
   useEffect(() => {
-    if (selectedTable && cleaningConfigs[selectedTable]) {
-      setLocalConfig({ ...DEFAULT_CONFIG, ...cleaningConfigs[selectedTable] });
+    if (selectedGroup) {
+      fetchGroupPreview(selectedGroup);
+    }
+  }, [selectedGroup, fetchGroupPreview]);
+
+  useEffect(() => {
+    if (selectedGroup && cleaningConfigs[selectedGroup]) {
+      setLocalConfig({ ...DEFAULT_CONFIG, ...cleaningConfigs[selectedGroup] });
     } else {
-      const cols = selectedTable ? (previews[selectedTable]?.columns || []) : [];
-      const autoDedup = cols.filter((c) => /id|number/i.test(c));
-      setLocalConfig({ ...DEFAULT_CONFIG, deduplicateColumns: autoDedup });
+      setLocalConfig({ ...DEFAULT_CONFIG, deduplicateColumns: [] });
     }
-  }, [selectedTable, cleaningConfigs, previews]);
+  }, [selectedGroup, cleaningConfigs]);
 
-  const currentPreview = selectedTable ? previews[selectedTable] : null;
-  const currentInv = selectedTable ? inventory.find((i) => i.table_key === selectedTable) : null;
-  const visibleColumns = currentPreview?.columns.filter((c) => !localConfig.dropColumns.includes(c)) || [];
-  const isCleaned = selectedTable ? !!cleaningConfigs[selectedTable] : false;
+  const currentSchema = selectedGroup ? groupSchema.find((g) => g.group_id === selectedGroup) : null;
+  const currentPreview = selectedGroup ? groupPreviews[selectedGroup] : null;
+  const columns = currentPreview?.columns || currentSchema?.columns || [];
+  const visibleColumns = columns.filter((c: string) => !localConfig.dropColumns.includes(c));
+  const isCleaned = selectedGroup ? !!cleaningConfigs[selectedGroup] : false;
 
   const toggleDropColumn = (col: string) => {
     setLocalConfig((prev) => ({
@@ -95,11 +120,15 @@ export default function DataCleaning({
   };
 
   const handleApply = async () => {
-    if (!selectedTable) return;
-    await onCleanTable(selectedTable, localConfig);
+    if (!selectedGroup) return;
+    await onCleanGroup(selectedGroup, localConfig);
+    setGroupPreviews((prev) => { const n = { ...prev }; delete n[selectedGroup]; return n; });
+    fetchGroupPreview(selectedGroup);
   };
 
   if (step !== 5) return null;
+
+  const gn = (id: string) => groupNameMap[id] || id;
 
   return (
     <motion.section
@@ -113,39 +142,39 @@ export default function DataCleaning({
           Data Cleaning
         </h2>
         <p className="text-sm text-neutral-500 dark:text-neutral-400 mt-1">
-          Optionally clean each table before grouping. Select a table, configure cleaning options, and apply.
+          Clean your appended group tables. Select a group, configure cleaning options, and apply.
         </p>
       </div>
 
       <div className="flex min-h-[500px]">
-        {/* Table selector sidebar */}
+        {/* Group selector sidebar */}
         <div className="w-64 border-r border-neutral-100 dark:border-neutral-800 bg-neutral-50/30 dark:bg-neutral-800 overflow-y-auto shrink-0">
           <div className="p-3">
             <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 px-2 mb-2">
-              Tables ({inventory.length})
+              Groups ({groupSchema.length})
             </p>
-            {inventory.map((inv) => {
-              const isSelected = selectedTable === inv.table_key;
-              const isTableCleaned = !!cleaningConfigs[inv.table_key];
+            {groupSchema.map((gs) => {
+              const isSelected = selectedGroup === gs.group_id;
+              const isGroupCleaned = !!cleaningConfigs[gs.group_id];
               return (
                 <button
-                  key={inv.table_key}
+                  key={gs.group_id}
                   type="button"
-                  onClick={() => setSelectedTable(inv.table_key)}
+                  onClick={() => setSelectedGroup(gs.group_id)}
                   className={`w-full text-left px-3 py-2.5 rounded-lg text-xs font-medium transition-colors mb-1 flex items-center gap-2 ${
                     isSelected
                       ? "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800"
                       : "text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 border border-transparent"
                   }`}
                 >
-                  <span className="truncate flex-1">{inv.table_key}</span>
-                  {isTableCleaned && (
+                  <span className="truncate flex-1">{gn(gs.group_id)}</span>
+                  {isGroupCleaned && (
                     <span className="w-4 h-4 rounded-full bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
                       <Check className="w-2.5 h-2.5" />
                     </span>
                   )}
                   <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
-                    {inv.rows}r
+                    {gs.rows}r
                   </span>
                 </button>
               );
@@ -155,14 +184,14 @@ export default function DataCleaning({
 
         {/* Main config area */}
         <div className="flex-1 overflow-y-auto">
-          {selectedTable && currentPreview ? (
+          {selectedGroup && columns.length > 0 ? (
             <div className="p-6 space-y-6">
-              {/* Table info */}
+              {/* Group info */}
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="font-semibold tracking-tight text-neutral-900 dark:text-white text-sm">{selectedTable}</h3>
+                  <h3 className="font-semibold tracking-tight text-neutral-900 dark:text-white text-sm">{gn(selectedGroup)}</h3>
                   <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-                    {currentInv?.rows.toLocaleString()} rows, {currentPreview.columns.length} columns
+                    {currentSchema?.rows?.toLocaleString()} rows, {columns.length} columns
                     {isCleaned && <span className="text-emerald-600 dark:text-emerald-400 font-medium ml-2">Cleaned</span>}
                   </p>
                 </div>
@@ -255,34 +284,32 @@ export default function DataCleaning({
                   {localConfig.deduplicateColumns.length > 0 && (
                     <div className="mb-3 px-3 py-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg text-[11px] text-amber-700 dark:text-amber-400">
                       Uniqueness key: <span className="font-bold">{localConfig.deduplicateColumns.join(" + ")}</span>
-                      {" "}— rows with the same combination of these values will be deduplicated (first row kept).
+                      {" "}&mdash; rows with the same combination of these values will be deduplicated (first row kept).
                     </div>
                   )}
                   <div className="flex flex-wrap gap-2">
-                    {(currentPreview?.columns || [])
-                      .filter((col) => !localConfig.dropColumns.includes(col))
-                      .map((col) => {
-                        const isSelected = localConfig.deduplicateColumns.includes(col);
-                        return (
-                          <button
-                            key={col}
-                            type="button"
-                            onClick={() => toggleDeduplicateColumn(col)}
-                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                              isSelected
-                                ? "bg-red-50 dark:bg-red-950/30 border-red-300 text-red-700 dark:text-red-400 shadow-sm"
-                                : "bg-white dark:bg-neutral-900 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-600"
-                            }`}
-                          >
-                            <span className={`w-3 h-3 rounded-sm border flex items-center justify-center transition-colors ${
-                              isSelected ? "bg-red-600 border-red-600" : "border-neutral-300"
-                            }`}>
-                              {isSelected && <Check className="w-2 h-2 text-white" />}
-                            </span>
-                            {col}
-                          </button>
-                        );
-                      })}
+                    {visibleColumns.map((col: string) => {
+                      const isSelected = localConfig.deduplicateColumns.includes(col);
+                      return (
+                        <button
+                          key={col}
+                          type="button"
+                          onClick={() => toggleDeduplicateColumn(col)}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                            isSelected
+                              ? "bg-red-50 dark:bg-red-950/30 border-red-300 text-red-700 dark:text-red-400 shadow-sm"
+                              : "bg-white dark:bg-neutral-900 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-600"
+                          }`}
+                        >
+                          <span className={`w-3 h-3 rounded-sm border flex items-center justify-center transition-colors ${
+                            isSelected ? "bg-red-600 border-red-600" : "border-neutral-300"
+                          }`}>
+                            {isSelected && <Check className="w-2 h-2 text-white" />}
+                          </span>
+                          {col}
+                        </button>
+                      );
+                    })}
                   </div>
                   {localConfig.deduplicateColumns.length === 0 && (
                     <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2 italic">
@@ -313,11 +340,11 @@ export default function DataCleaning({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                      {currentPreview.columns.map((col) => {
+                      {columns.map((col: string) => {
                         const isDropped = localConfig.dropColumns.includes(col);
-                        const samples = currentPreview.rows
-                          .map((r) => r[col])
-                          .filter((v) => v !== null && v !== undefined && v !== "")
+                        const samples = (currentPreview?.rows || [])
+                          .map((r: any) => r[col])
+                          .filter((v: any) => v !== null && v !== undefined && v !== "")
                           .slice(0, 3);
                         return (
                           <tr
@@ -368,12 +395,12 @@ export default function DataCleaning({
                   {expandedPreview ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                   Data Preview ({visibleColumns.length} columns)
                 </button>
-                {expandedPreview && visibleColumns.length > 0 && (
+                {expandedPreview && currentPreview && visibleColumns.length > 0 && (
                   <div className="overflow-x-auto border border-neutral-200 dark:border-neutral-700 rounded-xl max-h-64">
                     <table className="min-w-full text-xs">
                       <thead className="bg-neutral-50 dark:bg-neutral-800 sticky top-0">
                         <tr>
-                          {visibleColumns.map((col) => (
+                          {visibleColumns.map((col: string) => (
                             <th
                               key={col}
                               className="px-3 py-2 text-left font-bold text-neutral-500 whitespace-nowrap border-b border-neutral-200"
@@ -384,9 +411,9 @@ export default function DataCleaning({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-neutral-100">
-                        {currentPreview.rows.map((row, ri) => (
+                        {currentPreview.rows.map((row: any, ri: number) => (
                           <tr key={ri} className="hover:bg-red-50/30">
-                            {visibleColumns.map((col) => (
+                            {visibleColumns.map((col: string) => (
                               <td
                                 key={col}
                                 className="px-3 py-1.5 whitespace-nowrap text-neutral-700 max-w-[200px] truncate"
@@ -404,7 +431,7 @@ export default function DataCleaning({
             </div>
           ) : (
             <div className="flex items-center justify-center h-full text-neutral-400 text-sm">
-              Select a table from the list to configure cleaning options.
+              {groupSchema.length === 0 ? "No groups available. Complete the append step first." : "Select a group from the list to configure cleaning options."}
             </div>
           )}
         </div>
@@ -415,7 +442,7 @@ export default function DataCleaning({
         <div className="text-xs text-neutral-500">
           {Object.keys(cleaningConfigs).length > 0 ? (
             <span className="rounded-full border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-              {Object.keys(cleaningConfigs).length} table{Object.keys(cleaningConfigs).length !== 1 ? "s" : ""} cleaned
+              {Object.keys(cleaningConfigs).length} group{Object.keys(cleaningConfigs).length !== 1 ? "s" : ""} cleaned
             </span>
           ) : (
             <span>No cleaning applied yet. You can skip this step.</span>
@@ -426,7 +453,7 @@ export default function DataCleaning({
             Skip Cleaning
           </SecondaryButton>
           <PrimaryButton onClick={onProceed} disabled={loading}>
-            Proceed to Append Strategy
+            Proceed to Merge
             <ArrowRight className="w-4 h-4" />
           </PrimaryButton>
         </div>

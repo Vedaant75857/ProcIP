@@ -78,6 +78,7 @@ interface DataLoadingProps {
   onDeleteTable: (tableKey: string) => void;
   onSetHeaderRow: (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => void;
   onSelectChatItem?: (item: { type: string; id: string; label: string }) => void;
+  onDeleteRows?: (tableKey: string, rowIds: (string | number)[]) => void;
 }
 
 function HeaderRowEditor({
@@ -266,6 +267,7 @@ export default function DataLoading({
   onDeleteTable,
   onSetHeaderRow,
   onSelectChatItem,
+  onDeleteRows,
 }: DataLoadingProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [fileLabel, setFileLabel] = useState<string | null>(null);
@@ -273,9 +275,26 @@ export default function DataLoading({
   const [expandedTable, setExpandedTable] = useState<string | null>(null);
   const [headerEditTable, setHeaderEditTable] = useState<string | null>(null);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
+  const [selectedRowIds, setSelectedRowIds] = useState<Record<string, Set<string | number>>>({});
   const dragCounter = useRef(0);
   const zipInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+
+  const toggleRowSelection = (tableKey: string, rowId: string | number) => {
+    setSelectedRowIds(prev => {
+      const current = new Set(prev[tableKey] || []);
+      if (current.has(rowId)) current.delete(rowId); else current.add(rowId);
+      return { ...prev, [tableKey]: current };
+    });
+  };
+
+  const handleDeleteSelectedRows = (tableKey: string) => {
+    const ids = Array.from(selectedRowIds[tableKey] || []);
+    if (ids.length === 0 || !onDeleteRows) return;
+    if (!window.confirm(`Delete ${ids.length} selected row(s)?`)) return;
+    onDeleteRows(tableKey, ids);
+    setSelectedRowIds(prev => { const n = { ...prev }; delete n[tableKey]; return n; });
+  };
 
   const processDroppedItems = useCallback(async (items: DataTransferItemList) => {
     const entries: FileSystemEntry[] = [];
@@ -627,12 +646,37 @@ export default function DataLoading({
                     />
                   )}
 
-                  {isExpanded && !isHeaderEdit && preview && preview.columns.length > 0 && (
+                  {isExpanded && !isHeaderEdit && preview && preview.columns.length > 0 && (() => {
+                    const tableSelectedRows = selectedRowIds[inv.table_key] || new Set();
+                    const hasRecordId = preview.columns.includes("RECORD_ID");
+                    return (
                     <div className="px-6 pb-4">
+                      {onDeleteRows && tableSelectedRows.size > 0 && (
+                        <div className="flex items-center gap-2 mb-2 px-2 py-1.5 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg">
+                          <span className="text-xs font-bold text-red-600 dark:text-red-400">{tableSelectedRows.size} row{tableSelectedRows.size !== 1 ? "s" : ""} selected</span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSelectedRows(inv.table_key)}
+                            className="ml-auto px-3 py-1 text-[11px] font-bold bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
+                          >
+                            Delete Selected Rows
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedRowIds(prev => { const n = { ...prev }; delete n[inv.table_key]; return n; })}
+                            className="px-2 py-1 text-[11px] font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 rounded-md hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      )}
                       <div className="overflow-x-auto border border-neutral-200 dark:border-neutral-700 rounded-lg max-h-80">
                         <table className="min-w-full text-xs">
                           <thead className="bg-neutral-50 dark:bg-neutral-800 sticky top-0 z-10">
                             <tr>
+                              {onDeleteRows && (
+                                <th className="px-2 py-2 text-center font-bold text-neutral-400 dark:text-neutral-500 whitespace-nowrap border-b border-r border-neutral-200 dark:border-neutral-700 w-8" />
+                              )}
                               <th className="px-2 py-2 text-center font-bold text-neutral-400 dark:text-neutral-500 whitespace-nowrap border-b border-r border-neutral-200 dark:border-neutral-700 w-10">
                                 #
                               </th>
@@ -644,10 +688,23 @@ export default function DataLoading({
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                            {preview.rows.map((row, ri) => (
-                              <tr key={ri} className="hover:bg-red-50/30">
+                            {preview.rows.map((row, ri) => {
+                              const rowId = hasRecordId ? row["RECORD_ID"] : ri;
+                              const isRowSelected = tableSelectedRows.has(rowId);
+                              return (
+                              <tr key={ri} className={`transition-colors ${isRowSelected ? "bg-red-50 dark:bg-red-950/30" : "hover:bg-red-50/30"}`}>
+                                {onDeleteRows && (
+                                  <td className="px-2 py-1.5 text-center border-r border-neutral-100 dark:border-neutral-800">
+                                    <input
+                                      type="checkbox"
+                                      checked={isRowSelected}
+                                      onChange={() => toggleRowSelection(inv.table_key, rowId)}
+                                      className="w-3 h-3 text-red-600 rounded border-neutral-300 focus:ring-red-500"
+                                    />
+                                  </td>
+                                )}
                                 <td className="px-2 py-1.5 text-center text-[10px] text-neutral-400 dark:text-neutral-500 font-mono border-r border-neutral-100 dark:border-neutral-800">
-                                  {ri}
+                                  {hasRecordId ? row["RECORD_ID"] : ri}
                                 </td>
                                 {preview.columns.map((col) => (
                                   <td key={col} className="px-3 py-1.5 whitespace-nowrap text-neutral-700 dark:text-neutral-300 max-w-[200px] truncate">
@@ -655,7 +712,8 @@ export default function DataLoading({
                                   </td>
                                 ))}
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -663,7 +721,8 @@ export default function DataLoading({
                         Showing first {preview.rows.length} of {inv.rows.toLocaleString()} rows
                       </p>
                     </div>
-                  )}
+                    );
+                  })()}
 
                   {isExpanded && !isHeaderEdit && (!preview || preview.columns.length === 0) && (
                     <div className="px-6 pb-4">

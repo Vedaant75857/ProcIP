@@ -26,11 +26,13 @@ Rules and priorities:
 - Put tables that do not clearly match any group in unassigned with a short reason.
 - Do not force-fit tables to a group; if they do not fit, put them in unassigned or a one-table group.
 - Do not analyse empty tables (0 rows and 0 columns).
+- Give each group a concise, descriptive group_name that reflects the common data domain or theme of the tables in the group (e.g. "Invoice Line Items", "PO Master Data", "Vendor Reference Data").
+- Provide a 2-3 sentence reason for each group explaining why these specific files are grouped together, covering column overlap, value similarity, and data domain.
 
 Output schema:
 {
   "append_groups": [
-    {"group_id": "group_1", "tables": ["table_key", "..."], "reason": "why these tables belong together"}
+    {"group_id": "group_1", "group_name": "short descriptive name for this group", "tables": ["table_key", "..."], "reason": "2-3 sentence explanation of why these files are grouped together, covering column overlap, value similarity, and data domain."}
   ],
   "unassigned": [
     {"table_key": "table_key", "reason": "why not appended"}

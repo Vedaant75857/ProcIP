@@ -44,8 +44,8 @@ Confidence guidelines:
 
 Rules:
 - suggested_std_field must be an exact standard field name from the provided list, or null.
-- Never invent field names.
-- top_alternatives must contain only valid standard field names.
+- Never invent field names. Do not use ERP-specific column names like "WBS ELEMENT", "COST CTR", "PROFIT CENTER", etc. as suggestions or alternatives.
+- top_alternatives must contain only valid standard field names from the provided list. Every entry must exactly match one of the standard field names.
 - When two candidates are close, use the field definitions and sample values to explain the distinction.
 - Keep the reason concise and grounded in field definition plus source evidence.
 

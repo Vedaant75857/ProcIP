@@ -25,6 +25,14 @@ from shared.utils import json_safe, make_unique
 
 RAW_META_PREVIEW_ROWS = int(os.getenv("RAW_META_PREVIEW_ROWS", "20"))
 
+_META_COLUMNS = ["FILE_NAME", "RECORD_ID"]
+
+
+def _file_name_from_key(table_key: str) -> str:
+    """Extract human-readable file name from a table_key like 'path/to/file.xlsx::Sheet1'."""
+    path_part = table_key.split("::")[0]
+    return path_part.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
 
 def _clean_header(cells: list) -> list[str]:
     """Clean a header row: strip, uppercase, fill blanks."""
@@ -133,17 +141,21 @@ def _load_excel_sheet(
         raw_name = safe_table_name("raw", table_key)
         store_table_streaming(conn, raw_name, raw_cols, _raw_gen())
 
-        header = _clean_header(header_raw)
+        base_header = _clean_header(header_raw)
+        file_name = _file_name_from_key(table_key)
+        header = _META_COLUMNS + base_header
 
         def _clean_gen():
             first = True
+            record_id = 0
             for r in _iter_excel_rows(xlsx_bytes, sheet_name):
                 if first:
                     first = False
                     continue
                 if _is_empty_row(r):
                     continue
-                yield [_clean_cell(r[i]) if i < len(r) else None for i in range(len(header))]
+                record_id += 1
+                yield [file_name, str(record_id)] + [_clean_cell(r[i]) if i < len(r) else None for i in range(len(base_header))]
 
         tbl_name = safe_table_name("tbl", table_key)
         store_table_streaming(conn, tbl_name, header, _clean_gen())
@@ -191,17 +203,21 @@ def _load_csv(
         raw_name = safe_table_name("raw", table_key)
         store_table_streaming(conn, raw_name, raw_cols, _raw_gen())
 
-        header = _clean_header(header_raw)
+        base_header = _clean_header(header_raw)
+        file_name = _file_name_from_key(table_key)
+        header = _META_COLUMNS + base_header
 
         def _clean_gen():
             first = True
+            record_id = 0
             for r in _iter_csv_rows(text):
                 if first:
                     first = False
                     continue
                 if _is_empty_row(r):
                     continue
-                yield [_clean_cell(r[i]) if i < len(r) else None for i in range(len(header))]
+                record_id += 1
+                yield [file_name, str(record_id)] + [_clean_cell(r[i]) if i < len(r) else None for i in range(len(base_header))]
 
         tbl_name = safe_table_name("tbl", table_key)
         store_table_streaming(conn, tbl_name, header, _clean_gen())
@@ -332,9 +348,12 @@ def rebuild_table_from_raw_table(
     valid_idx = [i for i, ok in enumerate(has_value) if ok]
     if not valid_idx:
         valid_idx = list(range(len(final_columns)))
-    output_columns = [final_columns[i] for i in valid_idx]
+    base_output_columns = [final_columns[i] for i in valid_idx]
+    file_name = _file_name_from_key(table_key)
+    output_columns = _META_COLUMNS + base_output_columns
 
     def _data_gen():
+        record_id = 0
         cur = conn.execute(
             f"SELECT {select_cols} FROM {quote_id(raw_name)} WHERE rowid > ?",
             (header_row_index + 1,),
@@ -349,7 +368,8 @@ def rebuild_table_from_raw_table(
                 if cleaned is not None and cleaned != "":
                     non_empty = True
             if non_empty:
-                yield out_row
+                record_id += 1
+                yield [file_name, str(record_id)] + out_row
 
     tbl_name = safe_table_name("tbl", table_key)
     store_table_streaming(conn, tbl_name, output_columns, _data_gen())

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Loader2, ChevronRight, ChevronDown, LayoutGrid, ListChecks, ArrowRight, Info, Plus, MoreHorizontal, Undo2, Ban, Trash2, X, Eye, EyeOff, MessageSquare, Sparkles, AlertTriangle, Lightbulb, RefreshCw, Database, Columns, BarChart3, TrendingUp, Shield, Layers, CheckCircle2, Zap, GitMerge } from "lucide-react";
+import { Loader2, ChevronRight, ChevronDown, LayoutGrid, ListChecks, ArrowRight, Info, Plus, MoreHorizontal, Undo2, Ban, Trash2, X, Eye, EyeOff, MessageSquare, Sparkles, AlertTriangle, Lightbulb, RefreshCw, Database, Columns, BarChart3, TrendingUp, Shield, Layers } from "lucide-react";
 import { motion } from "motion/react";
 import AppendReport from "./AppendReport";
 import { PrimaryButton, EmptyState, ResultCapsules, SkeletonBlock } from "./ui";
@@ -28,9 +28,6 @@ interface AppendingProps {
   onRetryInsights?: () => void;
   groupReports?: any[];
   crossGroupOverview?: any;
-  preMergeAnalysis?: any | null;
-  preMergeLoading?: boolean;
-  onRetryPreMergeAnalysis?: () => void;
 }
 
 function TableActionMenu({
@@ -83,7 +80,7 @@ function TableActionMenu({
               onClick={() => { moveTableToGroup(tableKey, g.group_id); setOpen(false); }}
               className="w-full text-left px-3 py-2 hover:bg-neutral-50 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 flex items-center gap-2"
             >
-              <ArrowRight className="w-3 h-3 text-red-400" /> Move to {g.group_id}
+              <ArrowRight className="w-3 h-3 text-red-400" /> Move to {g.group_name || g.group_id}
             </button>
           ))}
           <div className="border-t border-neutral-100 dark:border-neutral-800 my-1" />
@@ -254,9 +251,6 @@ export default function Appending({
   onRetryInsights,
   groupReports,
   crossGroupOverview,
-  preMergeAnalysis,
-  preMergeLoading = false,
-  onRetryPreMergeAnalysis,
 }: AppendingProps) {
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
   const [showExcluded, setShowExcluded] = useState(false);
@@ -279,8 +273,8 @@ export default function Appending({
 
   return (
     <div className="space-y-6">
-      {/* Step 3: Append Plan */}
-      {step === 5 && (
+      {/* Step 4: Append Plan */}
+      {step === 4 && (
         <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -336,126 +330,6 @@ export default function Appending({
                   To create a new group: click one or more table names below to select them, then click the &quot;Create Group&quot; button (top right) or the dashed card.
                 </p>
 
-                {/* Pre-Merge Analysis Panel */}
-                {(preMergeLoading || preMergeAnalysis) && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="border border-neutral-200 dark:border-neutral-700 rounded-2xl bg-white dark:bg-neutral-900 shadow-sm overflow-hidden"
-                  >
-                    <div className="flex items-center justify-between px-5 py-3 bg-neutral-50 dark:bg-neutral-800 border-b border-neutral-100 dark:border-neutral-700">
-                      <div className="flex items-center gap-2">
-                        <GitMerge className="w-4 h-4 text-red-500" />
-                        <h3 className="text-sm font-bold text-neutral-900 dark:text-white">Pre-Merge Analysis</h3>
-                      </div>
-                      {!preMergeLoading && onRetryPreMergeAnalysis && (
-                        <button
-                          type="button"
-                          onClick={onRetryPreMergeAnalysis}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-semibold text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-700"
-                        >
-                          <RefreshCw className="w-3 h-3" />
-                          Regenerate
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="p-5">
-                      {preMergeLoading ? (
-                        <div className="space-y-3">
-                          <SkeletonBlock className="h-12 rounded-xl" />
-                          <SkeletonBlock className="h-8 rounded-lg" />
-                          <div className="grid grid-cols-2 gap-3">
-                            <SkeletonBlock className="h-20 rounded-xl" />
-                            <SkeletonBlock className="h-20 rounded-xl" />
-                          </div>
-                        </div>
-                      ) : preMergeAnalysis ? (
-                        <div className="space-y-4">
-                          {/* Overall Recommendation Banner */}
-                          {preMergeAnalysis.should_merge ? (
-                            <div className="flex items-start gap-3 p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-xl">
-                              <Zap className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-                              <div>
-                                <p className="text-sm font-bold text-blue-800 dark:text-blue-300">Merge Recommended</p>
-                                <p className="text-xs text-blue-700 dark:text-blue-400 mt-0.5">{preMergeAnalysis.rationale}</p>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex items-start gap-3 p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-xl">
-                              <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 flex-shrink-0 mt-0.5" />
-                              <div>
-                                <p className="text-sm font-bold text-emerald-800 dark:text-emerald-300">Merge Not Needed</p>
-                                <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-0.5">{preMergeAnalysis.skip_merge_reason || preMergeAnalysis.rationale}</p>
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Fact Table Badge */}
-                          {preMergeAnalysis.recommended_fact_group && (
-                            <div className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-300">
-                              <Database className="w-3.5 h-3.5 text-neutral-400" />
-                              <span>Recommended fact table:</span>
-                              <span className="font-bold text-neutral-900 dark:text-white bg-neutral-100 dark:bg-neutral-800 px-2 py-0.5 rounded-md">{preMergeAnalysis.recommended_fact_group}</span>
-                            </div>
-                          )}
-
-                          {/* Dimension Recommendations */}
-                          {preMergeAnalysis.should_merge && preMergeAnalysis.dimension_recommendations?.length > 0 && (
-                            <div className="space-y-2">
-                              <p className="text-[10px] font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-widest">Dimension Groups</p>
-                              <div className="grid gap-2">
-                                {preMergeAnalysis.dimension_recommendations.map((rec: any) => {
-                                  const priorityColors: Record<string, string> = {
-                                    high: "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400",
-                                    medium: "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400",
-                                    low: "bg-neutral-50 dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400",
-                                    skip: "bg-neutral-50 dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-400 dark:text-neutral-500",
-                                  };
-                                  const badgeColors: Record<string, string> = {
-                                    high: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300",
-                                    medium: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
-                                    low: "bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-400",
-                                    skip: "bg-neutral-200 dark:bg-neutral-700 text-neutral-400 dark:text-neutral-500",
-                                  };
-                                  const p = rec.priority || "skip";
-                                  return (
-                                    <div key={rec.group_id} className={`border rounded-xl p-3 ${priorityColors[p] || priorityColors.skip}`}>
-                                      <div className="flex items-center justify-between mb-1.5">
-                                        <span className="text-xs font-bold">{rec.group_id}</span>
-                                        <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${badgeColors[p] || badgeColors.skip}`}>
-                                          {p}
-                                        </span>
-                                      </div>
-                                      <p className="text-[11px] leading-relaxed mb-2">{rec.rationale}</p>
-                                      {rec.enrichment_columns?.length > 0 && (
-                                        <div className="flex flex-wrap gap-1 mb-1.5">
-                                          <span className="text-[10px] font-bold text-neutral-500 dark:text-neutral-400 mr-1">Enriches:</span>
-                                          {rec.enrichment_columns.map((col: string) => (
-                                            <span key={col} className="text-[10px] font-medium bg-white/60 dark:bg-neutral-900/60 border border-current/10 px-1.5 py-0.5 rounded">{col}</span>
-                                          ))}
-                                        </div>
-                                      )}
-                                      {rec.likely_join_hint?.length > 0 && (
-                                        <div className="flex items-center gap-1 text-[10px]">
-                                          <span className="font-bold text-neutral-500 dark:text-neutral-400">Likely key:</span>
-                                          {rec.likely_join_hint.map((k: string) => (
-                                            <span key={k} className="font-mono font-medium">{k}</span>
-                                          ))}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ) : null}
-                    </div>
-                  </motion.div>
-                )}
-
                 {/* Groups list */}
                 <div className="space-y-5">
                   {appendGroups.map((group) => {
@@ -465,10 +339,15 @@ export default function Appending({
                       <motion.div key={group.group_id} whileHover={{ y: -1 }} className="border border-neutral-200 dark:border-neutral-700 rounded-2xl bg-white dark:bg-neutral-900 hover:border-red-200 dark:hover:border-red-900/50 transition-all shadow-sm overflow-visible">
                         {/* Group Header */}
                         <div className="flex justify-between items-start p-5 pb-0">
-                          <h3 className="font-bold text-neutral-900 dark:text-white flex items-center gap-2">
-                            <Database className="w-4 h-4 text-red-500" />
-                            {group.group_id}
-                          </h3>
+                          <div className="min-w-0">
+                            <h3 className="font-bold text-neutral-900 dark:text-white flex items-center gap-2">
+                              <Database className="w-4 h-4 text-red-500" />
+                              {group.group_name || group.group_id}
+                            </h3>
+                            {group.group_name && (
+                              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5 font-mono">{group.group_id}</p>
+                            )}
+                          </div>
                           <div className="flex items-center gap-2">
                             {onSelectChatItem && (
                               <button
@@ -1008,7 +887,7 @@ export default function Appending({
         </motion.section>
       )}
 
-      {step === 5 && appendReport && appendReport.length > 0 && (
+      {step === 4 && appendReport && appendReport.length > 0 && (
         <AppendReport appendReport={appendReport} onProceed={handleProceedToMerge} />
       )}
     </div>

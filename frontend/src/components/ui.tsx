@@ -123,10 +123,10 @@ const STEP_META: Record<number, { title: string; description: string }> = {
   1: { title: "Upload + Settings", description: "Start by uploading your data files and configuring your API key." },
   2: { title: "Data Inventory", description: "Review extracted tables, adjust headers, and remove unwanted files." },
   3: { title: "Data Cleaning", description: "Clean and prepare individual tables before grouping." },
-  4: { title: "Header Normalisation", description: "Map each table's columns to the standard procurement schema before appending." },
-  5: { title: "Data Stitching", description: "Group related tables for stacking into unified datasets." },
-  6: { title: "Data Stitching", description: "Configure joins between your fact and dimension tables." },
-  7: { title: "Data Stitching", description: "Review your final merged flat file and download the output." },
+  4: { title: "Append Strategy", description: "Group related tables for stacking into unified datasets." },
+  5: { title: "Header Normalisation", description: "Map each table's columns to the standard procurement schema." },
+  6: { title: "Merge", description: "Configure joins between your fact and dimension tables." },
+  7: { title: "Merge", description: "Review your final merged flat file and download the output." },
   8: { title: "Analysis", description: "Explore patterns and insights in your consolidated data." },
   9: { title: "Procurement Mapping", description: "Map columns to standard procurement fields with AI assistance." },
   10: { title: "Procurement Views", description: "Analyze which procurement views your data supports." },
@@ -139,7 +139,7 @@ interface StepHeroProps {
   isAi?: boolean;
 }
 
-export function StepHero({ step, displayStep, totalSteps = 8, isAi }: StepHeroProps) {
+export function StepHero({ step, displayStep, totalSteps = 9, isAi }: StepHeroProps) {
   const meta = STEP_META[step] || { title: `Step ${step}`, description: "" };
   const shownStep = displayStep ?? step;
   return (
@@ -177,7 +177,6 @@ export function StepHero({ step, displayStep, totalSteps = 8, isAi }: StepHeroPr
 /* ─── DataStitchingHeader ─── */
 
 const STITCHING_SUBSTEPS = [
-  { step: 5, label: "Append Strategy", description: "Group & stack tables" },
   { step: 6, label: "Merge Configuration", description: "Configure joins" },
   { step: 7, label: "Results", description: "Review & download" },
 ];
@@ -201,15 +200,15 @@ export function DataStitchingHeader({ step, maxStepReached, setStep }: DataStitc
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-red-200">
             Data pipeline assistant
           </p>
-          <h2 className="mt-2 text-2xl font-semibold tracking-tight">Data Stitching</h2>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight">Merge</h2>
           <p className="mt-2 max-w-2xl text-sm text-red-50/90 leading-relaxed">
-            Append, merge, and review your consolidated dataset.
+            Configure joins and review your consolidated dataset.
           </p>
         </div>
         <div className="rounded-2xl bg-white/10 px-4 py-3 backdrop-blur shrink-0">
           <p className="text-[10px] uppercase tracking-wider text-red-200">Current step</p>
           <p className="mt-1 text-lg font-semibold tabular-nums">
-            4 <span className="text-red-200/70 text-sm font-normal">of 7</span>
+            6 <span className="text-red-200/70 text-sm font-normal">of 9</span>
           </p>
           <span className="mt-1.5 inline-block text-[9px] font-bold uppercase tracking-wider bg-white/15 px-2 py-0.5 rounded-full">
             AI-assisted

@@ -182,7 +182,14 @@ def _validate_ai_column_response(source_col: str, raw_resp: Any) -> dict[str, An
     else:
         suggested_std_field = str(suggested).strip()
         if suggested_std_field not in _VALID_STANDARD_FIELD_NAMES:
-            raise ValueError(f"LLM returned unknown standard field '{suggested_std_field}'.")
+            match = next(
+                (n for n in _VALID_STANDARD_FIELD_NAMES if n.lower() == suggested_std_field.lower()),
+                None,
+            )
+            if match:
+                suggested_std_field = match
+            else:
+                suggested_std_field = None
 
     try:
         confidence = float(raw_resp.get("confidence", 0) or 0)
@@ -192,14 +199,14 @@ def _validate_ai_column_response(source_col: str, raw_resp: Any) -> dict[str, An
 
     raw_alts = raw_resp.get("top_alternatives") or []
     if not isinstance(raw_alts, list):
-        raise ValueError("LLM top_alternatives was not a list.")
+        raw_alts = []
     top_alternatives: list[str] = []
     for alt in raw_alts:
         alt_name = str(alt or "").strip()
         if not alt_name:
             continue
         if alt_name not in _VALID_STANDARD_FIELD_NAMES:
-            raise ValueError(f"LLM returned unknown alternative field '{alt_name}'.")
+            continue
         if alt_name not in top_alternatives:
             top_alternatives.append(alt_name)
 

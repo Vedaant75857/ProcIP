@@ -74,7 +74,7 @@ interface DataLoadingProps {
   previews: Record<string, { columns: string[]; rows: any[] }>;
   uploadWarnings: { file: string; message: string }[];
   handleGenerateAppendPlan: () => void;
-  onProceedToCleaning: () => void;
+  onProceedToAppend: () => void;
   onDeleteTable: (tableKey: string) => void;
   onSetHeaderRow: (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => void;
   onSelectChatItem?: (item: { type: string; id: string; label: string }) => void;
@@ -262,7 +262,7 @@ export default function DataLoading({
   previews,
   uploadWarnings,
   handleGenerateAppendPlan,
-  onProceedToCleaning,
+  onProceedToAppend,
   onDeleteTable,
   onSetHeaderRow,
   onSelectChatItem,
@@ -687,10 +687,10 @@ export default function DataLoading({
               <ArrowRight className="w-4 h-4" />
             </motion.button>
             <PrimaryButton
-              onClick={onProceedToCleaning}
+              onClick={onProceedToAppend}
               disabled={loading}
             >
-              {loading ? <Loader2 className="animate-spin w-4 h-4" /> : "Proceed to Data Cleaning"}
+              {loading ? <Loader2 className="animate-spin w-4 h-4" /> : "Proceed to Append Strategy"}
               <ArrowRight className="w-4 h-4" />
             </PrimaryButton>
           </div>

@@ -99,7 +99,7 @@ export default function DataCleaning({
     await onCleanTable(selectedTable, localConfig);
   };
 
-  if (step !== 3) return null;
+  if (step !== 5) return null;
 
   return (
     <motion.section

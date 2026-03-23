@@ -96,21 +96,20 @@ export default function App() {
   const [showDataPreview, setShowDataPreview] = useState(false);
   const [uploadWarnings, setUploadWarnings] = useState<{ file: string; message: string }[]>([]);
 
-  // Step 3: Data Cleaning (per-table)
-  const [cleaningConfigs, setCleaningConfigs] = useState<Record<string, any>>({});
+  // Step 3: Append Strategy (groups + mapping)
+  const [appendGroups, setAppendGroups] = useState<any[]>([]);
+  const [unassigned, setUnassigned] = useState<any[]>([]);
+  const [excludedTables, setExcludedTables] = useState<string[]>([]);
+  const [appendGroupMappings, setAppendGroupMappings] = useState<any[]>([]);
+  const [groupSchema, setGroupSchema] = useState<any[]>([]);
+  const [appendReport, setAppendReport] = useState<any[] | null>(null);
 
   // Step 4: Header Normalisation
   const [headerNormDecisions, setHeaderNormDecisions] = useState<any>(null);
   const [headerNormStandardFields, setHeaderNormStandardFields] = useState<any[]>([]);
 
-  // Step 5: Append Plan
-  const [appendGroups, setAppendGroups] = useState<any[]>([]);
-  const [unassigned, setUnassigned] = useState<any[]>([]);
-  const [excludedTables, setExcludedTables] = useState<string[]>([]);
-  // Append Strategy (groups + mapping)
-  const [appendGroupMappings, setAppendGroupMappings] = useState<any[]>([]);
-  const [groupSchema, setGroupSchema] = useState<any[]>([]);
-  const [appendReport, setAppendReport] = useState<any[] | null>(null);
+  // Step 5: Data Cleaning (per-table)
+  const [cleaningConfigs, setCleaningConfigs] = useState<Record<string, any>>({});
 
   // Step 6: Merge Configuration (setup + keys + columns)
   const [mainGroupId, setMainGroupId] = useState<string>("");
@@ -149,10 +148,6 @@ export default function App() {
   const [groupReports, setGroupReports] = useState<any[]>([]);
   const [crossGroupOverview, setCrossGroupOverview] = useState<any | null>(null);
   const [groupInsightsLoading, setGroupInsightsLoading] = useState(false);
-
-  // Pre-Merge Analysis
-  const [preMergeAnalysis, setPreMergeAnalysis] = useState<any | null>(null);
-  const [preMergeLoading, setPreMergeLoading] = useState(false);
 
   // Merge Compatibility (step 5)
   const [mergeCompatibility, setMergeCompatibility] = useState<any[] | null>(null);
@@ -200,34 +195,6 @@ export default function App() {
     } finally {
       setGroupInsightsLoading(false);
       if (insightsAbortRef.current === controller) insightsAbortRef.current = null;
-    }
-  }, [addLog]);
-
-  const preMergeAbortRef = useRef<AbortController | null>(null);
-
-  const fetchPreMergeAnalysis = useCallback(async (sid: string, key: string) => {
-    preMergeAbortRef.current?.abort();
-    const controller = new AbortController();
-    preMergeAbortRef.current = controller;
-    setPreMergeLoading(true);
-    try {
-      const res = await fetch("/api/pre-merge-analysis", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sid, apiKey: key }),
-        signal: controller.signal,
-      });
-      if (!res.ok) throw new Error((await res.json()).error || "Failed to fetch pre-merge analysis");
-      const data = await res.json();
-      setPreMergeAnalysis(data);
-      addLog("Pre-Merge Analysis", "success", data.should_merge ? "Merge recommended" : "Merge not needed");
-    } catch (err: any) {
-      if (err.name === "AbortError") return;
-      console.error("Pre-merge analysis error:", err);
-      addLog("Pre-Merge Analysis", "error", err.message);
-    } finally {
-      setPreMergeLoading(false);
-      if (preMergeAbortRef.current === controller) preMergeAbortRef.current = null;
     }
   }, [addLog]);
 
@@ -289,7 +256,6 @@ export default function App() {
       if (s.groupInsights) setGroupInsights(s.groupInsights);
       if (s.groupReports) setGroupReports(s.groupReports);
       if (s.crossGroupOverview) setCrossGroupOverview(s.crossGroupOverview);
-      if (s.preMergeAnalysis) setPreMergeAnalysis(s.preMergeAnalysis);
       if (s.mergeCompatibility) setMergeCompatibility(s.mergeCompatibility);
       if (s.analysisResults) setAnalysisResults(s.analysisResults);
       if (s.analysisSelectedColumns) setAnalysisSelectedColumns(s.analysisSelectedColumns);
@@ -319,7 +285,7 @@ export default function App() {
         headerNormDecisions, headerNormStandardFields,
         appendGroups, unassigned, excludedTables,
         appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
-        preMergeAnalysis, mergeCompatibility,
+        mergeCompatibility,
         analysisResults, analysisSelectedColumns,
         mainGroupId, dimensionGroupIds,
         mergeKeys, dimColumnsToAdd,
@@ -337,7 +303,7 @@ export default function App() {
     headerNormDecisions, headerNormStandardFields,
     appendGroups, unassigned, excludedTables,
     appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
-    preMergeAnalysis, mergeCompatibility,
+    mergeCompatibility,
     analysisResults, analysisSelectedColumns,
     mainGroupId, dimensionGroupIds,
     mergeKeys, dimColumnsToAdd, mergeResult,
@@ -631,11 +597,16 @@ export default function App() {
 
       if (finalGroups.length === 0 && finalUnassigned.length > 0) {
         const ts = Date.now();
-        finalGroups = finalUnassigned.map((u: any, i: number) => ({
-          group_id: `auto_group_${i + 1}_${ts}`,
-          tables: [u.table_key],
-          reason: "Auto-grouped (single file)",
-        }));
+        finalGroups = finalUnassigned.map((u: any, i: number) => {
+          const parts = String(u.table_key).split("::");
+          const fileName = (parts[0] || "").split("/").pop() || `File ${i + 1}`;
+          return {
+            group_id: `auto_group_${i + 1}_${ts}`,
+            group_name: fileName,
+            tables: [u.table_key],
+            reason: "Auto-grouped (single file)",
+          };
+        });
         finalUnassigned = [];
         syncGroupsToServer(finalGroups, finalUnassigned);
         addLog("Append Plan", "info", `No groups from AI -- auto-created ${finalGroups.length} group(s)`);
@@ -654,12 +625,19 @@ export default function App() {
       setGroupInsights({});
       setGroupReports([]);
       setCrossGroupOverview(null);
-      setPreMergeAnalysis(null);
       addLog("Append Plan", "success", `Created ${finalGroups.length} group(s), ${finalUnassigned.length} unassigned`);
-      setStep(5);
+      setStep(3);
       if (finalGroups.length > 0 && apiKey?.trim()) {
         fetchGroupInsights(sessionId, apiKey);
-        fetchPreMergeAnalysis(sessionId, apiKey);
+
+        // Auto-run header alignment right after groups are created
+        setLoadingMessage("AI is aligning column headers across your groups...");
+        addLog("Append Mapping", "info", "AI aligning column headers across groups...");
+        if (controller.signal.aborted) throw new DOMException("Request cancelled.", "AbortError");
+        const mappingExec = await runOperation("append_mapping", { appendGroups: finalGroups }, { mode: "pipeline", autoPrepare: true, persist: true });
+        const mappingData = mappingExec?.result || {};
+        setAppendGroupMappings(mappingData.appendGroupMappings || []);
+        addLog("Append Mapping", "success", `Mappings generated for ${(mappingData.appendGroupMappings || []).length} group(s)`);
       }
     } catch (err: any) {
       const message = err?.name === "AbortError" ? "Request cancelled. Please try again." : err.message;
@@ -720,12 +698,14 @@ export default function App() {
       setUnassigned(newUnassigned);
       syncGroupsToServer(updatedGroups, newUnassigned);
     }
+    setAppendGroupMappings([]);
   };
 
   const createNewGroup = (tableKeys: string[]) => {
     const newGroupId = `manual_group_${Date.now()}`;
     const newGroup = {
       group_id: newGroupId,
+      group_name: `Custom Group (${tableKeys.length} files)`,
       tables: tableKeys,
       reason: "Manually created group"
     };
@@ -741,6 +721,7 @@ export default function App() {
     const finalGroups = [...newAppendGroups, newGroup];
     setAppendGroups(finalGroups);
     setUnassigned(newUnassigned);
+    setAppendGroupMappings([]);
     syncGroupsToServer(finalGroups, newUnassigned);
   };
 
@@ -752,6 +733,7 @@ export default function App() {
     setAppendGroups(newGroups);
     setUnassigned(newUnassigned);
     setExcludedTables(prev => [...prev, tableKey]);
+    setAppendGroupMappings([]);
     syncGroupsToServer(newGroups, newUnassigned);
   };
 
@@ -759,6 +741,7 @@ export default function App() {
     setExcludedTables(prev => prev.filter(t => t !== tableKey));
     const newUnassigned = [...unassigned, { table_key: tableKey, reason: "Restored" }];
     setUnassigned(newUnassigned);
+    setAppendGroupMappings([]);
     syncGroupsToServer(appendGroups, newUnassigned);
   };
 
@@ -822,7 +805,7 @@ export default function App() {
   };
 
   const handleProceedToMerge = useCallback(() => {
-    setStep(6);
+    setStep(4);
   }, []);
 
   const handleSetMainGroupId = useCallback((id: string) => {
@@ -1259,21 +1242,22 @@ export default function App() {
     }
   };
 
-  const AI_STEPS = new Set([4, 5, 8, 9]);
+  const AI_STEPS = new Set([3, 4, 8, 9]);
 
   const sidebarItems = [
-    { name: "Upload + Settings",     steps: [1],         sub: "Manual" },
-    { name: "Inventory",             steps: [2],         sub: "Manual" },
-    { name: "Data Cleaning",         steps: [3],         sub: "Manual" },
-    { name: "Header Normalisation",  steps: [4],         sub: "AI-assisted" },
-    { name: "Data Stitching",        steps: [5, 6, 7],   sub: "AI-assisted" },
-    { name: "Analysis",              steps: [8],         sub: "AI-assisted" },
-    { name: "Procurement Mapping",   steps: [9],         sub: "AI-assisted" },
-    { name: "Procurement Views",     steps: [10],        sub: "Manual" },
+    { name: "Upload + Settings",     steps: [1],      sub: "Manual" },
+    { name: "Inventory",             steps: [2],      sub: "Manual" },
+    { name: "Append Strategy",       steps: [3],      sub: "AI-assisted" },
+    { name: "Header Normalisation",  steps: [4],      sub: "AI-assisted" },
+    { name: "Data Cleaning",         steps: [5],      sub: "Manual" },
+    { name: "Merge",                 steps: [6, 7],   sub: "AI-assisted" },
+    { name: "Analysis",              steps: [8],      sub: "AI-assisted" },
+    { name: "Procurement Mapping",   steps: [9],      sub: "AI-assisted" },
+    { name: "Procurement Views",     steps: [10],     sub: "Manual" },
   ];
 
-  const getDisplayStep = (s: number) => s <= 4 ? s : s <= 7 ? 5 : s - 2;
-  const animationKey = step >= 5 && step <= 7 ? "stitching" : step;
+  const getDisplayStep = (s: number) => s <= 5 ? s : s <= 7 ? 6 : s - 1;
+  const animationKey = step >= 6 && step <= 7 ? "merge" : step;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-50 via-white to-neutral-100 dark:from-neutral-950 dark:via-neutral-900 dark:to-neutral-950 text-neutral-900 dark:text-neutral-100 font-sans flex relative overflow-hidden">
@@ -1648,10 +1632,10 @@ export default function App() {
               </motion.button>
             </div>
 
-            {step >= 5 && step <= 7 ? (
+            {step >= 6 && step <= 7 ? (
               <DataStitchingHeader step={step} maxStepReached={maxStepReached} setStep={setStep} />
             ) : (
-              <StepHero step={step} displayStep={getDisplayStep(step)} isAi={AI_STEPS.has(step)} />
+              <StepHero step={step} displayStep={getDisplayStep(step)} isAi={AI_STEPS.has(step)} totalSteps={9} />
             )}
 
             {error && (
@@ -1697,22 +1681,39 @@ export default function App() {
                   previews={previews}
                   uploadWarnings={uploadWarnings}
                   handleGenerateAppendPlan={handleGenerateAppendPlan}
-                  onProceedToCleaning={() => setStep(3)}
+                  onProceedToAppend={() => setStep(3)}
                   onDeleteTable={handleDeleteTable}
                   onSetHeaderRow={handleSetHeaderRow}
                   onSelectChatItem={onSelectChatItem}
                 />
 
-                <DataCleaning
-                  step={step}
-                  inventory={inventory}
-                  previews={previews}
-                  cleaningConfigs={cleaningConfigs}
-                  loading={loading}
-                  onCleanTable={handleCleanTable}
-                  onProceed={() => setStep(4)}
-                  onSkip={() => setStep(4)}
-                />
+                {step === 3 && (
+                  <Appending
+                    step={step}
+                    appendGroups={appendGroups}
+                    unassigned={unassigned}
+                    excludedTables={excludedTables}
+                    appendGroupMappings={appendGroupMappings}
+                    setAppendGroupMappings={setAppendGroupMappings}
+                    previews={previews}
+                    loading={loading}
+                    handleGenerateAppendPlan={handleGenerateAppendPlan}
+                    handleGenerateAppendMapping={handleGenerateAppendMapping}
+                    handleExecuteAppend={handleExecuteAppend}
+                    moveTableToGroup={moveTableToGroup}
+                    createNewGroup={createNewGroup}
+                    excludeTable={excludeTable}
+                    restoreTable={restoreTable}
+                    appendReport={appendReport}
+                    handleProceedToMerge={handleProceedToMerge}
+                    onSelectChatItem={onSelectChatItem}
+                    groupInsights={groupInsights}
+                    groupReports={groupReports}
+                    crossGroupOverview={crossGroupOverview}
+                    groupInsightsLoading={groupInsightsLoading}
+                    onRetryInsights={() => fetchGroupInsights(sessionId, apiKey)}
+                  />
+                )}
 
                 {step === 4 && (
                   <HeaderNormalisation
@@ -1727,7 +1728,18 @@ export default function App() {
                   />
                 )}
 
-                {step >= 5 && step <= 7 && (
+                <DataCleaning
+                  step={step}
+                  inventory={inventory}
+                  previews={previews}
+                  cleaningConfigs={cleaningConfigs}
+                  loading={loading}
+                  onCleanTable={handleCleanTable}
+                  onProceed={() => setStep(6)}
+                  onSkip={() => setStep(6)}
+                />
+
+                {step >= 6 && step <= 7 && (
                   <AnimatePresence mode="wait" custom={slideDirection} initial={false}>
                     <motion.div
                       key={step}
@@ -1737,35 +1749,6 @@ export default function App() {
                       animate="animate"
                       exit="exit"
                     >
-                      <Appending
-                        step={step}
-                        appendGroups={appendGroups}
-                        unassigned={unassigned}
-                        excludedTables={excludedTables}
-                        appendGroupMappings={appendGroupMappings}
-                        setAppendGroupMappings={setAppendGroupMappings}
-                        previews={previews}
-                        loading={loading}
-                        handleGenerateAppendPlan={handleGenerateAppendPlan}
-                        handleGenerateAppendMapping={handleGenerateAppendMapping}
-                        handleExecuteAppend={handleExecuteAppend}
-                        moveTableToGroup={moveTableToGroup}
-                        createNewGroup={createNewGroup}
-                        excludeTable={excludeTable}
-                        restoreTable={restoreTable}
-                        appendReport={appendReport}
-                        handleProceedToMerge={handleProceedToMerge}
-                        onSelectChatItem={onSelectChatItem}
-                        groupInsights={groupInsights}
-                        groupReports={groupReports}
-                        crossGroupOverview={crossGroupOverview}
-                        groupInsightsLoading={groupInsightsLoading}
-                        onRetryInsights={() => fetchGroupInsights(sessionId, apiKey)}
-                        preMergeAnalysis={preMergeAnalysis}
-                        preMergeLoading={preMergeLoading}
-                        onRetryPreMergeAnalysis={() => fetchPreMergeAnalysis(sessionId, apiKey)}
-                      />
-
                       <Merging
                         sessionId={sessionId}
                         step={step}

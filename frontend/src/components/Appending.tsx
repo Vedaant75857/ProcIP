@@ -273,8 +273,8 @@ export default function Appending({
 
   return (
     <div className="space-y-6">
-      {/* Step 4: Append Plan */}
-      {step === 4 && (
+      {/* Step 3: Append Plan */}
+      {step === 3 && (
         <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -887,7 +887,7 @@ export default function Appending({
         </motion.section>
       )}
 
-      {step === 4 && appendReport && appendReport.length > 0 && (
+      {step === 3 && appendReport && appendReport.length > 0 && (
         <AppendReport appendReport={appendReport} onProceed={handleProceedToMerge} />
       )}
     </div>

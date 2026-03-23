@@ -122,9 +122,9 @@ export function EmptyState({ icon: Icon, title, description, action }: EmptyStat
 const STEP_META: Record<number, { title: string; description: string }> = {
   1: { title: "Upload + Settings", description: "Start by uploading your data files and configuring your API key." },
   2: { title: "Data Inventory", description: "Review extracted tables, adjust headers, and remove unwanted files." },
-  3: { title: "Data Cleaning", description: "Clean and prepare individual tables before grouping." },
-  4: { title: "Append Strategy", description: "Group related tables for stacking into unified datasets." },
-  5: { title: "Header Normalisation", description: "Map each table's columns to the standard procurement schema." },
+  3: { title: "Append Strategy", description: "Group related tables for stacking into unified datasets." },
+  4: { title: "Header Normalisation", description: "Map each table's columns to the standard procurement schema." },
+  5: { title: "Data Cleaning", description: "Clean and prepare individual tables before grouping." },
   6: { title: "Merge", description: "Configure joins between your fact and dimension tables." },
   7: { title: "Merge", description: "Review your final merged flat file and download the output." },
   8: { title: "Analysis", description: "Explore patterns and insights in your consolidated data." },

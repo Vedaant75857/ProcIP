@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import sqlite3
 from typing import Any
+
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_backend_dir = os.path.normpath(os.path.join(_this_dir, ".."))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
 
 from shared.ai import call_ai_json
 from shared.db import (
@@ -23,6 +30,11 @@ from shared.db import (
 from shared.utils import chunk_list
 
 from appending.ai.prompts import SYSTEM_PROMPT_APPEND_ONLY, SYSTEM_PROMPT_HEADER_MAPPING
+
+try:
+    from ai_core.procurement_reframer import reframe_procurement as _reframe
+except Exception:
+    _reframe = None
 
 MAX_TABLES_PER_CALL = 25
 EXAMPLES_PER_COLUMN = 10
@@ -109,6 +121,25 @@ def run_append_plan(conn: sqlite3.Connection, api_key: str | None) -> dict[str, 
         })
         gid += 1
     unassigned = []
+
+    if api_key and _reframe:
+        reason_map: dict[str, str] = {}
+        for i, g in enumerate(append_groups):
+            if g.get("reason"):
+                reason_map[f"grp_{i}"] = g["reason"]
+        for i, n in enumerate(notes):
+            if isinstance(n, str) and n.strip():
+                reason_map[f"note_{i}"] = n
+        if reason_map:
+            reframed = _reframe(reason_map, api_key)
+            for i, g in enumerate(append_groups):
+                key = f"grp_{i}"
+                if key in reframed:
+                    g["reason"] = reframed[key]
+            for i in range(len(notes)):
+                key = f"note_{i}"
+                if key in reframed:
+                    notes[i] = reframed[key]
 
     set_meta(conn, "appendGroups", append_groups)
     set_meta(conn, "unassigned", unassigned)

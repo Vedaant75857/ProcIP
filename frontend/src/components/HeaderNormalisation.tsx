@@ -603,7 +603,7 @@ export default function HeaderNormalisation({
         <div className="flex flex-wrap gap-2 pt-2">
           <PrimaryButton onClick={applyChanges} disabled={loading || tableKeys.length === 0}>
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-            Apply Decisions
+            Apply & Proceed to Data Cleaning
             <ArrowRight className="w-4 h-4" />
           </PrimaryButton>
           <SecondaryButton onClick={onRun} disabled={loading}>
@@ -611,7 +611,7 @@ export default function HeaderNormalisation({
           </SecondaryButton>
           <SecondaryButton onClick={onSkip} disabled={loading}>
             <SkipForward className="w-4 h-4" />
-            Skip
+            Skip to Data Cleaning
           </SecondaryButton>
         </div>
       </div>

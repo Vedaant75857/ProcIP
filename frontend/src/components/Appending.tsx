@@ -21,7 +21,7 @@ interface AppendingProps {
   excludeTable: (tableKey: string) => void;
   restoreTable: (tableKey: string) => void;
   appendReport: any[] | null;
-  handleProceedToMerge: () => void;
+  handleProceedToHeaderNorm: () => void;
   onSelectChatItem?: (item: { type: string; id: string; label: string }) => void;
 }
 
@@ -110,7 +110,7 @@ export default function Appending({
   excludeTable,
   restoreTable,
   appendReport,
-  handleProceedToMerge,
+  handleProceedToHeaderNorm,
   onSelectChatItem,
 }: AppendingProps) {
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
@@ -490,7 +490,7 @@ export default function Appending({
       )}
 
       {step === 3 && appendReport && appendReport.length > 0 && (
-        <AppendReport appendReport={appendReport} onProceed={handleProceedToMerge} />
+        <AppendReport appendReport={appendReport} onProceed={handleProceedToHeaderNorm} />
       )}
     </div>
   );

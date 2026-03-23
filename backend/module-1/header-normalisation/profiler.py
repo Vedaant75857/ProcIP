@@ -31,6 +31,14 @@ from shared.db.stats_ops import column_stats, column_distinct_values
 infer_value_type = getattr(_aliases_mod, "infer_value_type", lambda samples: "text")
 semantic_hints = getattr(_aliases_mod, "semantic_hints", lambda samples: [])
 
+_VALUE_TYPE_TO_SQL: dict[str, str] = {
+    "number": "REAL",
+    "integer": "INTEGER",
+    "date": "DATE",
+    "currency": "REAL",
+    "percentage": "REAL",
+}
+
 
 @dataclass
 class ColumnProfile:
@@ -100,18 +108,19 @@ def profile_table_columns(
         distinct_pct = distinct / non_null if non_null else 0.0
 
         samples = column_distinct_values(conn, sql_name, col, max_samples)
+        val_type = infer_value_type(samples)
 
         profiles.append(
             ColumnProfile(
                 source_name=col,
                 position=i,
-                sql_dtype="TEXT",
+                sql_dtype=_VALUE_TYPE_TO_SQL.get(val_type, "TEXT"),
                 total_rows=total_rows,
                 null_pct=null_pct,
                 distinct_pct=distinct_pct,
                 neighbours=_neighbours(columns, i),
                 sample_values=samples,
-                inferred_value_type=infer_value_type(samples),
+                inferred_value_type=val_type,
                 semantic_tags=semantic_hints(samples),
             )
         )

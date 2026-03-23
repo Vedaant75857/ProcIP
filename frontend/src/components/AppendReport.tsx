@@ -248,7 +248,7 @@ export default function AppendReport({ appendReport, onProceed }: AppendReportPr
       {/* Proceed Button */}
       <div className="p-6 border-t border-neutral-100 dark:border-neutral-800 flex justify-end">
         <PrimaryButton onClick={onProceed}>
-          Proceed to Merge Configuration
+          Proceed to Header Normalisation
           <ArrowRight className="w-4 h-4" />
         </PrimaryButton>
       </div>

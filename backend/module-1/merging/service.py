@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import sqlite3
 from itertools import combinations
 from typing import Any
+
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_backend_dir = os.path.normpath(os.path.join(_this_dir, ".."))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
 
 from db.join_ops import (
     build_adaptive_normalization,
@@ -13,7 +20,13 @@ from db.join_ops import (
     match_keys_distinct_sql,
     profile_all_columns,
 )
-from merging.ai.prompts import SYSTEM_PROMPT_MERGE_KEY_SELECTION
+from merging.ai.prompts import (
+    SYSTEM_PROMPT_MERGE_KEY_SELECTION,
+    CANDIDATE_DISCOVERY_PROMPT,
+    SKEPTIC_PROMPT,
+    EXECUTION_REVIEW_PROMPT,
+    FINAL_ARBITER_PROMPT,
+)
 from merging.key_candidates import score_candidates
 from merging.merge_executor import execute_chained_joins
 
@@ -27,6 +40,11 @@ from shared.db import (
     table_exists,
     table_row_count,
 )
+
+try:
+    from ai_core.procurement_reframer import reframe_procurement as _reframe
+except Exception:
+    _reframe = None
 
 MAX_CANDIDATES_FOR_AI = 20
 LOW_MATCH_RATE_THRESHOLD = 0.3
@@ -77,6 +95,112 @@ def _extend_keys_for_uniqueness(
     return keys_f, keys_d
 
 
+def _run_4step_pipeline(
+    conn: sqlite3.Connection,
+    fact_table: str,
+    dim_table: str,
+    fact_cols: list[str],
+    dim_cols: list[str],
+    fact_profiles: list[dict[str, Any]],
+    dim_profiles: list[dict[str, Any]],
+    candidate_dicts: list[dict[str, Any]],
+    api_key: str,
+) -> tuple[str | None, str | None, float, str, str | None]:
+    """Run the 4-step AI agent pipeline for merge key selection.
+
+    Returns (fact_key, dim_key, confidence, rationale, status).
+    Falls back to single-call SYSTEM_PROMPT_MERGE_KEY_SELECTION on failure.
+    """
+    # --- Step 1: Candidate Discovery ---
+    step1_payload = {
+        "fact_columns": fact_cols,
+        "dim_columns": dim_cols,
+        "fact_profiles": fact_profiles[:30],
+        "dim_profiles": dim_profiles[:30],
+        "candidates": candidate_dicts,
+    }
+    step1_out = call_ai_json(CANDIDATE_DISCOVERY_PROMPT, step1_payload, api_key)
+    if not isinstance(step1_out, dict):
+        step1_out = {}
+
+    ranked = step1_out.get("ranked_candidates") or []
+    top5 = ranked[:5] if ranked else candidate_dicts[:5]
+
+    # --- Step 2: Skeptic — simulate joins for top candidates ---
+    simulations: list[dict[str, Any]] = []
+    for cand in top5:
+        fk = cand.get("fact_keys", [cand.get("main_column")])
+        dk = cand.get("dim_keys", [cand.get("dimension_column")])
+        fk = [k for k in (fk or []) if k and k in fact_cols]
+        dk = [k for k in (dk or []) if k and k in dim_cols]
+        if fk and dk:
+            sim = compute_composite_match_rate_sql(conn, fact_table, dim_table, fk, dk)
+        else:
+            sim = {"match_rate": 0}
+        simulations.append({**cand, "simulation": sim})
+
+    step2_payload = {
+        "candidates": simulations,
+        "fact_profiles": fact_profiles[:15],
+        "dim_profiles": dim_profiles[:15],
+    }
+    step2_out = call_ai_json(SKEPTIC_PROMPT, step2_payload, api_key)
+    if not isinstance(step2_out, dict):
+        step2_out = {}
+
+    # --- Step 3: Execution Review ---
+    step3_payload = {
+        "candidates": simulations,
+        "skeptic_assessment": step2_out,
+    }
+    step3_out = call_ai_json(EXECUTION_REVIEW_PROMPT, step3_payload, api_key)
+    if not isinstance(step3_out, dict):
+        step3_out = {}
+
+    # --- Step 4: Final Arbiter ---
+    step4_payload = {
+        "discovery": step1_out,
+        "skeptic": step2_out,
+        "execution_review": step3_out,
+        "simulations": simulations,
+    }
+    step4_out = call_ai_json(FINAL_ARBITER_PROMPT, step4_payload, api_key)
+    if not isinstance(step4_out, dict):
+        step4_out = {}
+
+    final_candidates = step4_out.get("final_candidates") or []
+    sel_rank = int(step4_out.get("selected_candidate_rank") or 1)
+    sel_idx = max(sel_rank - 1, 0)
+    chosen = final_candidates[sel_idx] if sel_idx < len(final_candidates) else None
+
+    if chosen:
+        fk_list = chosen.get("fact_keys") or []
+        dk_list = chosen.get("dim_keys") or []
+        fact_key = fk_list[0] if fk_list else None
+        dim_key = dk_list[0] if dk_list else None
+        conf = float(chosen.get("confidence") or 0)
+        rationale = str(step4_out.get("rationale") or chosen.get("reason") or "")
+        status = step4_out.get("status")
+        return fact_key, dim_key, conf, rationale, status
+
+    # Fallback: single-call prompt
+    ai_payload = {
+        "fact_columns": fact_cols,
+        "dim_columns": dim_cols,
+        "candidates": candidate_dicts,
+    }
+    ai_out = call_ai_json(SYSTEM_PROMPT_MERGE_KEY_SELECTION, ai_payload, api_key)
+    if isinstance(ai_out, dict):
+        return (
+            ai_out.get("fact_key"),
+            ai_out.get("dim_key"),
+            float(ai_out.get("confidence") or 0),
+            str(ai_out.get("reasoning") or ""),
+            None,
+        )
+    return None, None, 0.0, "", None
+
+
 def smart_merge_setup_for_dim(
     conn: sqlite3.Connection,
     fact_table: str,
@@ -102,38 +226,38 @@ def smart_merge_setup_for_dim(
         return _no_match_row(dim_gid, "No SQL join candidates (no overlapping distinct values)")
 
     top_for_ai = scored[:MAX_CANDIDATES_FOR_AI]
-    ai_payload = {
-        "fact_columns": fact_cols,
-        "dim_columns": dim_cols,
-        "candidates": [
-            {
-                "main_column": c["main_column"],
-                "dimension_column": c["dimension_column"],
-                "main_distinct": c["main_distinct"],
-                "dim_distinct": c["dim_distinct"],
-                "distinct_matches": c["distinct_matches"],
-                "match_rate_distinct": c["match_rate_distinct"],
-                "cardinality_diff_abs": c["cardinality_diff_abs"],
-            }
-            for c in top_for_ai
-        ],
-    }
+    candidate_dicts = [
+        {
+            "candidateId": f"c{i}",
+            "main_column": c["main_column"],
+            "dimension_column": c["dimension_column"],
+            "main_distinct": c["main_distinct"],
+            "dim_distinct": c["dim_distinct"],
+            "distinct_matches": c["distinct_matches"],
+            "match_rate_distinct": c["match_rate_distinct"],
+            "cardinality_diff_abs": c["cardinality_diff_abs"],
+        }
+        for i, c in enumerate(top_for_ai)
+    ]
 
     ai_fact: str | None = None
     ai_dim: str | None = None
     ai_confidence = 0.0
     ai_reason = ""
-    try:
-        if api_key:
-            ai_out = call_ai_json(SYSTEM_PROMPT_MERGE_KEY_SELECTION, ai_payload, api_key)
-            if isinstance(ai_out, dict):
-                ai_fact = ai_out.get("fact_key")
-                ai_dim = ai_out.get("dim_key")
-                if isinstance(ai_out.get("confidence"), (int, float)):
-                    ai_confidence = float(ai_out["confidence"])
-                ai_reason = str(ai_out.get("reasoning") or "")
-    except Exception:
-        pass
+    ai_status: str | None = None
+
+    if api_key:
+        try:
+            ai_fact, ai_dim, ai_confidence, ai_reason, ai_status = _run_4step_pipeline(
+                conn, fact_table, dim_table, fact_cols, dim_cols,
+                fact_profiles or [], dim_profiles,
+                candidate_dicts, api_key,
+            )
+        except Exception:
+            ai_fact = ai_dim = None
+            ai_confidence = 0.0
+            ai_reason = ""
+            ai_status = None
 
     if isinstance(ai_fact, str) and ai_fact.lower() in ("null", "none", ""):
         ai_fact = None
@@ -174,7 +298,17 @@ def smart_merge_setup_for_dim(
 
     uniq = check_dim_uniqueness(conn, dim_table, keys_d)
     join_type = "many_to_one" if uniq["is_unique"] else "many_to_many"
-    status = "proposed" if match_rate >= 0.05 else "review_needed"
+
+    if ai_status in ("proposed", "review_needed"):
+        status = ai_status
+    else:
+        status = "proposed" if match_rate >= 0.05 else "review_needed"
+
+    rationale = ai_reason or f"Keys: {'+'.join(keys_f)} \u2194 {'+'.join(keys_d)}"
+
+    if api_key and _reframe:
+        reframed = _reframe({"rationale": rationale}, api_key)
+        rationale = reframed.get("rationale", rationale)
 
     out: dict[str, Any] = {
         "dimension_group": dim_gid,
@@ -185,7 +319,7 @@ def smart_merge_setup_for_dim(
         "distinct_matches": rate.get("distinct_matches"),
         "valid_fact_keys": rate.get("valid_fact_keys"),
         "confidence": ai_confidence,
-        "rationale": ai_reason or f"Keys: {'+'.join(keys_f)} ↔ {'+'.join(keys_d)}",
+        "rationale": rationale,
         "low_quality_join": match_rate < LOW_MATCH_RATE_THRESHOLD,
         "format_hints": format_hints,
         "join_type": join_type,
@@ -269,7 +403,7 @@ def run_merge_execute(
     dim_columns_to_add: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Chain left joins per proposed/manual/review plan; materialize ``final_merged``."""
-    _ = session_id, api_key
+    _ = session_id
     if main_group_id is None:
         main_group_id = get_meta(conn, "mergeMainGroupId")
     if not main_group_id:

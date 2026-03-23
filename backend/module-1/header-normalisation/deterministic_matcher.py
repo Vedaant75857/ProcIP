@@ -1,10 +1,13 @@
-"""Deterministic (rule-based) scoring of source columns against standard fields."""
+"""Deterministic scoring adapter -- wraps the 8-tier matching engine while
+preserving the ScoredMatch + score_deterministic() interface expected by
+service.py and the AI payload builder."""
 
 from __future__ import annotations
 
 import importlib.util
 import os
 import re
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,16 +15,16 @@ _this_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 def _load_mod(name: str, path: str):
-    import sys as _sys
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-    _sys.modules[name] = mod
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
     return mod
 
 
 _aliases_mod = _load_mod("hn_aliases", os.path.join(_this_dir, "aliases.py"))
 _schema_mod = _load_mod("hn_schema_det", os.path.join(_this_dir, "schema_mapper.py"))
+_engine_mod = _load_mod("hn_engine_det", os.path.join(_this_dir, "matching_engine.py"))
 
 EXPECTED_DTYPE = _aliases_mod.EXPECTED_DTYPE
 FIELD_ALIASES = _aliases_mod.FIELD_ALIASES
@@ -32,6 +35,15 @@ _norm = _aliases_mod._norm
 infer_value_type = _aliases_mod.infer_value_type
 semantic_hints = _aliases_mod.semantic_hints
 STANDARD_FIELDS = _schema_mod.STANDARD_FIELDS
+STD_FIELD_NAMES = _schema_mod.STD_FIELD_NAMES
+
+map_single_header = _engine_mod.map_single_header
+_fuzzy_score = _engine_mod._fuzzy_score
+
+
+_STD_FIELD_META: dict[str, dict[str, Any]] = {
+    f["name"]: f for f in STANDARD_FIELDS
+}
 
 
 @dataclass
@@ -53,14 +65,6 @@ class ScoredMatch:
             "semantic_tags": FIELD_TO_SEMANTIC_TAGS.get(self.std_field, []),
             "why": _summarise_score(self.components),
         }
-
-
-_STD_NAMES_NORM: dict[str, str] = {
-    _norm(f["name"]): f["name"] for f in STANDARD_FIELDS
-}
-_STD_FIELD_META: dict[str, dict[str, Any]] = {
-    f["name"]: f for f in STANDARD_FIELDS
-}
 
 
 def _tokenize(s: str) -> set[str]:
@@ -99,7 +103,11 @@ def score_deterministic(
     samples: list[str],
     top_n: int = 5,
 ) -> list[ScoredMatch]:
-    """Score *source_name* against every standard field; return top *top_n*."""
+    """Score *source_name* against every standard field; return top *top_n*.
+
+    Uses the 8-tier engine internally for the primary match, then builds
+    the full ranked list for backward-compat with the AI payload builder.
+    """
     src_norm = _norm(source_name)
     src_tokens = _tokenize(source_name)
     val_type = infer_value_type(samples)
@@ -119,24 +127,20 @@ def score_deterministic(
 
         components: dict[str, float] = {}
 
-        # 1. Exact name match
         if src_norm == fname_norm:
             components["exact"] = 1.0
         else:
             components["exact"] = 0.0
 
-        # 2. Alias match
         aliases = FIELD_ALIASES.get(fname, set())
         if src_norm in aliases:
             components["alias"] = 0.9
         else:
             components["alias"] = 0.0
 
-        # 3. Fuzzy (token Jaccard)
         jacc = _jaccard(src_tokens, fname_tokens)
         components["fuzzy"] = min(jacc * 0.8, 0.8)
 
-        # 4. Type compatibility bonus
         expected = EXPECTED_DTYPE.get(fname, "text")
         if expected == val_type and val_type != "text":
             components["type"] = 0.1
@@ -145,7 +149,6 @@ def score_deterministic(
         else:
             components["type"] = -0.05
 
-        # 5. Semantic hint bonus
         if fname in sem_boost_fields:
             components["semantic"] = 0.1
         else:

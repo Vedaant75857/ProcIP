@@ -1,17 +1,27 @@
-"""Header normalisation orchestration — profile, match, classify, apply."""
+"""Header normalisation orchestration -- 8-tier matching engine + AI paths.
+
+Phase 1: Run the deterministic 8-tier engine (T1-T7) on every column.
+Phase 2 (if API key): Path A maps remaining UNMAPPED headers via AI;
+                       Path B re-validates all mapped headers via AI.
+Converts internal results to the UI-expected decision shape and persists.
+"""
 
 from __future__ import annotations
 
+import concurrent.futures
 import importlib.util
 import os
 import sys
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
 if _this_dir not in sys.path:
     sys.path.insert(0, _this_dir)
+
+_backend_dir = os.path.normpath(os.path.join(_this_dir, "..", ".."))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
 
 from shared.db import (
     all_registered_tables,
@@ -26,7 +36,6 @@ from shared.db import (
     table_row_count,
     drop_table,
 )
-from shared.ai import call_ai_json
 
 
 def _load_mod(name: str, path: str):
@@ -38,20 +47,27 @@ def _load_mod(name: str, path: str):
 
 
 _profiler_mod = _load_mod("hn_profiler", os.path.join(_this_dir, "profiler.py"))
-_matcher_mod = _load_mod("hn_matcher", os.path.join(_this_dir, "deterministic_matcher.py"))
 _aliases_mod = _load_mod("hn_aliases_svc", os.path.join(_this_dir, "aliases.py"))
 _schema_mod = _load_mod("hn_schema", os.path.join(_this_dir, "schema_mapper.py"))
+_engine_mod = _load_mod("hn_engine", os.path.join(_this_dir, "matching_engine.py"))
+_ai_mod = _load_mod("hn_ai_mapper", os.path.join(_this_dir, "ai_mapper.py"))
 _prompts_mod = _load_mod("hn_prompts_svc", os.path.join(_this_dir, "ai", "prompts.py"))
+_alias_store_mod = _load_mod("hn_alias_store", os.path.join(_this_dir, "alias_store.py"))
 
 profile_table_columns = _profiler_mod.profile_table_columns
-score_deterministic = _matcher_mod.score_deterministic
+map_single_header = _engine_mod.map_single_header
+ai_map_unmapped = _ai_mod.ai_map_unmapped
+ai_validate_mapped = _ai_mod.ai_validate_mapped
+alias_add = _alias_store_mod.alias_add
+merge_into_lookup = _alias_store_mod.merge_into_lookup
+
 STANDARD_FIELDS = _schema_mod.STANDARD_FIELDS
+STD_FIELD_NAMES = _schema_mod.STD_FIELD_NAMES
 SYSTEM_PROMPT_HEADER_NORM_COLUMN = _prompts_mod.SYSTEM_PROMPT_HEADER_NORM_COLUMN
 FIELD_ALIASES_LIST = _aliases_mod.FIELD_ALIASES_LIST
 EXPECTED_DTYPE = _aliases_mod.EXPECTED_DTYPE
 FIELD_TO_SEMANTIC_TAGS = _aliases_mod.FIELD_TO_SEMANTIC_TAGS
 
-CONCURRENCY = 3
 _VALID_STANDARD_FIELD_NAMES = {f["name"] for f in STANDARD_FIELDS}
 _STD_FIELD_PAYLOAD = [
     {
@@ -66,16 +82,25 @@ _STD_FIELD_PAYLOAD = [
     for f in STANDARD_FIELDS
 ]
 
+CONCURRENCY = 3
+
+merge_into_lookup(_engine_mod.ALIAS_LOOKUP)
+
+try:
+    from ai_core.procurement_reframer import reframe_procurement as _reframe
+except Exception:
+    _reframe = None
+
 
 # ---------------------------------------------------------------------------
-# 1.  run_header_norm  — profile + deterministic + AI
+# 1.  run_header_norm  -- 8-tier engine + AI paths
 # ---------------------------------------------------------------------------
 
 def run_header_norm(
     conn: sqlite3.Connection,
     api_key: str | None,
 ) -> dict[str, Any]:
-    """Profile tables, run deterministic + AI matching, return decisions.
+    """Profile tables, run 8-tier matching, optionally AI-enhance, return decisions.
 
     Prefers appended__ group tables when they exist (post-append workflow).
     Falls back to tbl__ tables for pre-append usage.
@@ -94,41 +119,96 @@ def run_header_norm(
     if not tbl_entries:
         raise ValueError("No inventory tables found. Complete the upload/cleaning step first.")
 
-    all_tables: list[dict[str, Any]] = []
-
-    for entry in tbl_entries:
+    def _process_table(entry: dict) -> dict[str, Any]:
         table_key = entry["table_key"]
         sql_name = entry["sql_name"]
         profiles = profile_table_columns(conn, sql_name)
 
-        col_decisions: list[dict[str, Any]] = []
-        ai_payloads: list[dict[str, Any]] = []
-        det_results_cache: list[list[Any]] = []
-
+        # ----- Phase 1: 8-tier deterministic engine (T1-T7) -----
+        engine_results: list[dict] = []
         for prof in profiles:
-            det_results = score_deterministic(prof.source_name, prof.sample_values, top_n=5)
-            det_results_cache.append(det_results)
-            det_hints = [m.to_dict() for m in det_results]
-            ai_payloads.append({
-                "profile": prof.to_dict(),
-                "det_hints": det_hints,
-            })
+            result = map_single_header(prof.source_name, prof.sample_values)
+            engine_results.append(result)
 
-        ai_results = _run_ai_batch(ai_payloads, api_key)
+        # ----- Phase 2: AI paths (if api_key provided) -----
+        if api_key:
+            data_rows = _get_data_rows(conn, sql_name, limit=50)
+            profiles_for_ai = [p.to_dict() for p in profiles]
 
-        for idx, prof in enumerate(profiles):
-            det_results = det_results_cache[idx] if idx < len(det_results_cache) else []
-            ai_out = ai_results[idx]
-            decision = _combine(prof.source_name, det_results, ai_out)
+            det_hints_cache: list[list[dict]] = []
+            for er in engine_results:
+                top = er.get("top_scores", [])
+                det_hints_cache.append([{"std_field": f, "score": s} for f, s in top[:5]])
+
+            # Path A: map AI_NEEDED columns
+            unmapped_items = [
+                {**er, "col_idx": idx}
+                for idx, er in enumerate(engine_results)
+                if er.get("action") == "AI_NEEDED"
+            ]
+            if unmapped_items:
+                ai_results = ai_map_unmapped(
+                    unmapped_items,
+                    data_rows,
+                    api_key,
+                    profiles=profiles_for_ai,
+                    det_results_cache=det_hints_cache,
+                    std_field_payload=_STD_FIELD_PAYLOAD,
+                    system_prompt=SYSTEM_PROMPT_HEADER_NORM_COLUMN,
+                    batch_size=10,
+                )
+                ai_map = {r["raw"]: r for r in ai_results}
+                for er in engine_results:
+                    if er.get("action") == "AI_NEEDED" and er["raw"] in ai_map:
+                        updated = ai_map[er["raw"]]
+                        er["tier"] = updated.get("tier", er["tier"])
+                        er["mapped_to"] = updated.get("mapped_to", er["mapped_to"])
+                        er["confidence"] = updated.get("confidence", er["confidence"])
+                        er["action"] = updated.get("action", er["action"])
+                        if "reason" in updated:
+                            er["reason"] = updated["reason"]
+
+            # Path B: validate already-mapped columns
+            ai_validate_mapped(engine_results, data_rows, api_key)
+
+        # Mark remaining AI_NEEDED as KEEP (no API key or AI didn't resolve)
+        for er in engine_results:
+            if er.get("action") == "AI_NEEDED":
+                er["action"] = "KEEP"
+                er["tier"] = "T8_SKIPPED"
+            if er.get("action") == "UNMAPPED":
+                er["action"] = "KEEP"
+
+        # ----- Convert to UI-expected shape -----
+        col_decisions: list[dict[str, Any]] = []
+        for idx, er in enumerate(engine_results):
+            decision = _to_ui_decision(er)
             col_decisions.append(decision)
 
-        all_tables.append({
+        # Reframe reason fields via procurement reframer
+        if api_key and _reframe:
+            reason_map = {
+                f"r_{i}": d["reason"]
+                for i, d in enumerate(col_decisions)
+                if d.get("reason")
+            }
+            if reason_map:
+                reframed = _reframe(reason_map, api_key)
+                for i, d in enumerate(col_decisions):
+                    key = f"r_{i}"
+                    if key in reframed and reframed[key] != reason_map.get(key):
+                        d["reason"] = reframed[key]
+
+        return {
             "tableKey": table_key,
             "sqlName": sql_name,
             "totalRows": table_row_count(conn, sql_name),
             "totalCols": len(profiles),
             "decisions": col_decisions,
-        })
+        }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+        all_tables = list(pool.map(_process_table, tbl_entries))
 
     set_meta(conn, "headerNormDecisions", all_tables)
 
@@ -138,131 +218,45 @@ def run_header_norm(
     }
 
 
-def _run_ai_batch(
-    payloads: list[dict[str, Any]],
-    api_key: str | None,
-) -> list[dict[str, Any]]:
-    """Run concurrent AI calls for a list of column payloads."""
-    results: list[dict[str, Any]] = [{}] * len(payloads)
-    failures: list[str] = []
-
-    def _call(idx: int, payload: dict) -> tuple[int, dict[str, Any], str | None]:
-        source_col = str(payload.get("profile", {}).get("source_name") or f"column_{idx}")
-        user_obj = {
-            "standard_fields": _STD_FIELD_PAYLOAD,
-            "column": payload["profile"],
-            "deterministic_hints": payload["det_hints"],
-        }
-        try:
-            raw_resp = call_ai_json(SYSTEM_PROMPT_HEADER_NORM_COLUMN, user_obj, api_key)
-            resp = _validate_ai_column_response(source_col, raw_resp)
-            return idx, resp, None
-        except Exception as exc:
-            return idx, {}, f"{source_col}: {exc}"
-
-    with ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
-        futures = {executor.submit(_call, i, p): i for i, p in enumerate(payloads)}
-        for future in as_completed(futures):
-            idx, resp, failure = future.result()
-            results[idx] = resp
-            if failure:
-                failures.append(failure)
-
-    if failures:
-        sample = "; ".join(failures[:5])
-        remainder = len(failures) - min(len(failures), 5)
-        extra = f" (+{remainder} more)" if remainder > 0 else ""
-        raise ValueError(
-            "Header normalization AI failed. "
-            "The backend only enriches the payload; the LLM must make the final decision. "
-            f"Failures: {sample}{extra}"
-        )
-
-    return results
+def _get_data_rows(conn: sqlite3.Connection, sql_name: str, limit: int = 50) -> list[list]:
+    """Read rows as list-of-lists for AI sample extraction."""
+    cols = read_table_columns(conn, sql_name)
+    rows = read_table(conn, sql_name, limit)
+    result: list[list] = []
+    for row in rows:
+        if isinstance(row, dict):
+            result.append([row.get(c) for c in cols])
+        else:
+            result.append(list(row))
+    return result
 
 
-def _validate_ai_column_response(source_col: str, raw_resp: Any) -> dict[str, Any]:
-    if not isinstance(raw_resp, dict):
-        raise ValueError("LLM response was not a JSON object.")
+def _to_ui_decision(engine_result: dict) -> dict[str, Any]:
+    """Convert an engine result into the shape the UI expects.
 
-    suggested = raw_resp.get("suggested_std_field")
-    if suggested is None or str(suggested).strip() == "":
-        suggested_std_field = None
-    else:
-        suggested_std_field = str(suggested).strip()
-        if suggested_std_field not in _VALID_STANDARD_FIELD_NAMES:
-            match = next(
-                (n for n in _VALID_STANDARD_FIELD_NAMES if n.lower() == suggested_std_field.lower()),
-                None,
-            )
-            if match:
-                suggested_std_field = match
-            else:
-                suggested_std_field = None
+    Uses T7 ``top_scores`` (already computed by the engine) for alternatives,
+    eliminating the separate ``score_deterministic`` pass.
+    """
+    raw = engine_result.get("raw", "")
+    mapped_to = engine_result.get("mapped_to")
+    confidence = engine_result.get("confidence", 0.0)
+    action = engine_result.get("action", "KEEP")
+    tier = engine_result.get("tier", "")
+    reason = engine_result.get("reason", "")
 
-    try:
-        confidence = float(raw_resp.get("confidence", 0) or 0)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("LLM confidence was not numeric.") from exc
-    confidence = max(0.0, min(confidence, 1.0))
+    if not reason:
+        reason = f"Matched via {tier}" if mapped_to else "No deterministic match found"
 
-    raw_alts = raw_resp.get("top_alternatives") or []
-    if not isinstance(raw_alts, list):
-        raw_alts = []
-    top_alternatives: list[str] = []
-    for alt in raw_alts:
-        alt_name = str(alt or "").strip()
-        if not alt_name:
-            continue
-        if alt_name not in _VALID_STANDARD_FIELD_NAMES:
-            continue
-        if alt_name not in top_alternatives:
-            top_alternatives.append(alt_name)
+    top_scores = engine_result.get("top_scores", [])
+    det_score = top_scores[0][1] if top_scores else 0.0
+    det_field = top_scores[0][0] if top_scores else None
+    top_alts = [f for f, _s in top_scores[:5]]
 
     return {
-        "source_col": source_col,
-        "suggested_std_field": suggested_std_field,
-        "confidence": confidence,
-        "reason": str(raw_resp.get("reason") or "").strip(),
-        "top_alternatives": top_alternatives[:5],
-    }
-
-
-def _combine(
-    source_col: str,
-    det_results: list,
-    ai_out: dict[str, Any],
-) -> dict[str, Any]:
-    """Use the LLM as the final decider and keep deterministic matching as evidence."""
-    best_det = det_results[0] if det_results else None
-    det_score = best_det.score if best_det else 0.0
-    det_field = best_det.std_field if best_det else None
-
-    ai_field = ai_out.get("suggested_std_field")
-    ai_conf = float(ai_out.get("confidence", 0))
-    ai_reason = ai_out.get("reason", "")
-    ai_alts = ai_out.get("top_alternatives", [])
-
-    if ai_field and ai_conf >= 0.84:
-        action = "AUTO"
-        suggested = ai_field
-        confidence = ai_conf
-    elif ai_field:
-        action = "REVIEW"
-        suggested = ai_field
-        confidence = ai_conf
-    else:
-        action = "KEEP"
-        suggested = None
-        confidence = ai_conf
-
-    top_alts = ai_alts[:5] if ai_alts else [m.std_field for m in det_results[:5]]
-
-    return {
-        "source_col": source_col,
-        "suggested_std_field": suggested,
+        "source_col": raw,
+        "suggested_std_field": mapped_to,
         "confidence": round(confidence, 4),
-        "reason": ai_reason,
+        "reason": reason,
         "action": action,
         "top_alternatives": top_alts,
         "det_score": round(det_score, 4),
@@ -272,7 +266,7 @@ def _combine(
 
 
 # ---------------------------------------------------------------------------
-# 2.  apply_header_norm  — create hn__ tables from approved decisions
+# 2.  apply_header_norm  -- create hn__ tables from approved decisions
 # ---------------------------------------------------------------------------
 
 def apply_header_norm(
@@ -281,7 +275,7 @@ def apply_header_norm(
 ) -> dict[str, Any]:
     """Apply user-approved mapping decisions and create hn__ tables.
 
-    *decisions* maps ``table_key`` → list of column decisions, each with:
+    *decisions* maps ``table_key`` -> list of column decisions, each with:
       - source_col, action ("AUTO"|"REVIEW"|"DROP"|"KEEP"), mapped_to (str|None)
     """
     applied: list[dict[str, Any]] = []
@@ -308,6 +302,7 @@ def apply_header_norm(
             if mapped_to and mapped_to.strip():
                 select_parts.append(f'{quote_id(src)} AS {quote_id(mapped_to)}')
                 mapped_count += 1
+                alias_add(mapped_to, src)
             else:
                 select_parts.append(quote_id(src))
                 kept_count += 1
@@ -378,7 +373,7 @@ def _rebuild_meta(conn: sqlite3.Connection) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3.  get_table_preview  — first N rows for the review UI
+# 3.  get_table_preview  -- first N rows for the review UI
 # ---------------------------------------------------------------------------
 
 def get_table_preview(

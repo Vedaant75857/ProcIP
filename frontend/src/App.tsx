@@ -252,48 +252,66 @@ export default function App() {
 
   const STORAGE_KEY = "datastitcher_session";
 
-  // Hydrate from sessionStorage on mount
+  // Hydrate lightweight state from localStorage, then recover full state from backend
   useEffect(() => {
+    let cancelled = false;
     try {
-      const raw = sessionStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.sessionId) setSessionId(s.sessionId);
       if (s.apiKey) setApiKey(s.apiKey);
       if (s.stitchingMode === "pipeline" || s.stitchingMode === "modular") setStitchingMode(s.stitchingMode);
       if (s.step) { setStep(s.step); setMaxStepReached(s.maxStepReached || s.step); }
-      if (s.inventory) setInventory(s.inventory);
-      if (s.previews) setPreviews(s.previews);
-      if (s.uploadWarnings) setUploadWarnings(s.uploadWarnings);
-      if (s.cleaningConfigs) setCleaningConfigs(s.cleaningConfigs);
-      if (s.headerNormDecisions) setHeaderNormDecisions(s.headerNormDecisions);
-      if (s.headerNormStandardFields) setHeaderNormStandardFields(s.headerNormStandardFields);
-      if (s.appendGroups) setAppendGroups(s.appendGroups);
-      if (s.unassigned) setUnassigned(s.unassigned);
       if (s.excludedTables) setExcludedTables(s.excludedTables);
-      if (s.appendGroupMappings) setAppendGroupMappings(s.appendGroupMappings);
-      if (s.groupSchema) setGroupSchema(s.groupSchema);
-      if (s.appendReport) setAppendReport(s.appendReport);
-      if (s.groupInsights) setGroupInsights(s.groupInsights);
-      if (s.groupReports) setGroupReports(s.groupReports);
-      if (s.crossGroupOverview) setCrossGroupOverview(s.crossGroupOverview);
-      if (s.mergeCompatibility) setMergeCompatibility(s.mergeCompatibility);
-      if (s.analysisResults) setAnalysisResults(s.analysisResults);
-      if (s.mainGroupId) setMainGroupId(s.mainGroupId);
-      if (s.dimensionGroupIds) setDimensionGroupIds(s.dimensionGroupIds);
-      if (s.mergeKeys) setMergeKeys(s.mergeKeys);
+      if (s.cleaningConfigs) setCleaningConfigs(s.cleaningConfigs);
       if (s.dimColumnsToAdd) setDimColumnsToAdd(s.dimColumnsToAdd);
-      if (s.mergeResult) setMergeResult(s.mergeResult);
-      if (s.procurementMappings) setProcurementMappings(s.procurementMappings);
-      if (s.standardFields) setStandardFields(s.standardFields);
-      if (s.viewCategories) setViewCategories(s.viewCategories);
-      if (s.viewRequirements) setViewRequirements(s.viewRequirements);
+      if (s.dimensionGroupIds) setDimensionGroupIds(s.dimensionGroupIds);
       if (s.possibleViews) setPossibleViews(s.possibleViews);
+
+      const sid = s.sessionId;
+      if (!sid) return;
+      setSessionId(sid);
+
+      // Recover full state from the backend using the persisted sessionId
+      (async () => {
+        try {
+          const res = await fetch(`/api/execution/state?sessionId=${encodeURIComponent(sid)}`);
+          if (!res.ok || cancelled) return;
+          const data = await res.json();
+          if (cancelled) return;
+          applyStatePatch(data.statePatch || {});
+        } catch {
+          // Backend unavailable — fall back to whatever localStorage had
+          if (s.inventory) setInventory(s.inventory);
+          if (s.headerNormDecisions) setHeaderNormDecisions(s.headerNormDecisions);
+          if (s.headerNormStandardFields) setHeaderNormStandardFields(s.headerNormStandardFields);
+          if (s.appendGroups) setAppendGroups(s.appendGroups);
+          if (s.unassigned) setUnassigned(s.unassigned);
+          if (s.appendGroupMappings) setAppendGroupMappings(s.appendGroupMappings);
+          if (s.groupSchema) setGroupSchema(s.groupSchema);
+          if (s.appendReport) setAppendReport(s.appendReport);
+          if (s.mergeKeys) setMergeKeys(s.mergeKeys);
+          if (s.mainGroupId) setMainGroupId(s.mainGroupId);
+          if (s.mergeResult) setMergeResult(s.mergeResult);
+          if (s.procurementMappings) setProcurementMappings(s.procurementMappings);
+          if (s.standardFields) setStandardFields(s.standardFields);
+          if (s.analysisResults) setAnalysisResults(s.analysisResults);
+          if (s.previews) setPreviews(s.previews);
+          if (s.uploadWarnings) setUploadWarnings(s.uploadWarnings);
+          if (s.groupInsights) setGroupInsights(s.groupInsights);
+          if (s.groupReports) setGroupReports(s.groupReports);
+          if (s.crossGroupOverview) setCrossGroupOverview(s.crossGroupOverview);
+          if (s.mergeCompatibility) setMergeCompatibility(s.mergeCompatibility);
+          if (s.viewCategories) setViewCategories(s.viewCategories);
+          if (s.viewRequirements) setViewRequirements(s.viewRequirements);
+        }
+      })();
     } catch { /* ignore corrupt storage */ }
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist to sessionStorage on state changes
+  // Persist to localStorage on state changes (lightweight — backend is source of truth)
   useEffect(() => {
     if (!sessionId) return;
     try {
@@ -313,7 +331,7 @@ export default function App() {
         procurementMappings, standardFields, viewCategories, viewRequirements,
         possibleViews,
       };
-      sessionStorage.setItem(STORAGE_KEY, jsonSafeStringify(persistable));
+      localStorage.setItem(STORAGE_KEY, jsonSafeStringify(persistable));
     } catch { /* storage full or serialization error */ }
   }, [
     stitchingMode,
@@ -669,6 +687,8 @@ export default function App() {
       const data = exec?.result || {};
       setHeaderNormDecisions(data.tables || []);
       setHeaderNormStandardFields(data.standardFields || []);
+      // Cascade-reset downstream step (cleaning)
+      setCleaningConfigs({});
       const totalCols = (data.tables || []).reduce((s: number, t: any) => s + (t.decisions?.length || 0), 0);
       addLog("Header Normalisation", "success", `Mapped ${totalCols} columns across ${data.tables?.length || 0} table(s)`);
       const normGroupIds = (data.tables || []).map((t: any) => t.tableKey);
@@ -696,6 +716,8 @@ export default function App() {
       const applied = data.appliedTables || [];
       const totalMapped = applied.reduce((s: number, t: any) => s + (t.mapped || 0), 0);
       addLog("Header Normalisation", "success", `Applied mappings to ${applied.length} table(s), ${totalMapped} columns renamed`);
+      // Cascade-reset downstream step (cleaning configs reference old column names)
+      setCleaningConfigs({});
       setStep(5);
     } catch (err: any) {
       setError(err.message);
@@ -747,6 +769,11 @@ export default function App() {
       setAppendGroupMappings([]);
       setGroupSchema([]);
       setAppendReport(null);
+      // Cascade-reset downstream steps (header norm, cleaning, merge)
+      setHeaderNormDecisions(null);
+      setHeaderNormStandardFields([]);
+      setGroupPreviewData({});
+      setCleaningConfigs({});
       setMainGroupId("");
       setDimensionGroupIds([]);
       setMergeKeys([]);
@@ -908,6 +935,11 @@ export default function App() {
       const data = exec?.result || {};
       setGroupSchema(data.groupSchema);
       setAppendReport(data.appendReport || null);
+      // Cascade-reset downstream steps (header norm, cleaning)
+      setHeaderNormDecisions(null);
+      setHeaderNormStandardFields([]);
+      setGroupPreviewData({});
+      setCleaningConfigs({});
       if (data.groupSchema.length > 0) {
         setMainGroupId(data.groupSchema[0].group_id);
         setDimensionGroupIds(data.groupSchema.slice(1).map((g: any) => g.group_id));
@@ -922,7 +954,7 @@ export default function App() {
     }
   };
 
-  const handleProceedToMerge = useCallback(() => {
+  const handleProceedToHeaderNorm = useCallback(() => {
     setStep(4);
   }, []);
 
@@ -1737,7 +1769,7 @@ export default function App() {
                     excludeTable={excludeTable}
                     restoreTable={restoreTable}
                     appendReport={appendReport}
-                    handleProceedToMerge={handleProceedToMerge}
+                    handleProceedToHeaderNorm={handleProceedToHeaderNorm}
                     onSelectChatItem={onSelectChatItem}
                   />
                 )}

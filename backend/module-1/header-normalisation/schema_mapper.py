@@ -76,6 +76,222 @@ STANDARD_FIELDS: list[dict] = [
     {"id": 73, "type": "Others", "name": "Transaction ID", "description": "Unique transaction identifier"},
 ]
 
+STD_FIELD_NAMES: list[str] = [f["name"] for f in STANDARD_FIELDS]
+
+STD_FIELD_DESCRIPTIONS: dict[str, str] = {
+    "Invoice Number":
+        "Unique identifier assigned to a supplier invoice by the vendor or ERP. "
+        "Alphanumeric, e.g. INV-2024-001, 5100012345. Links all line items on the same bill.",
+    "Invoice Line Number":
+        "Sequential line item number within a single invoice. Numeric, e.g. 1, 2, 10. "
+        "Combined with Invoice Number it uniquely identifies one charge.",
+    "Invoice Date":
+        "Date the supplier issued the invoice. Format varies: YYYY-MM-DD, DD/MM/YYYY, MM-DD-YYYY. "
+        "Used for aging, fiscal-year bucketing, and payment-term calculation.",
+    "Goods Receipt Date":
+        "Date the buying organisation physically received the goods or confirmed service delivery. "
+        "Marks the start of the payment obligation. Often called GR date or delivery date.",
+    "Invoice Line Description":
+        "Free-text description of the product or service charged on this invoice line. "
+        "E.g. 'Office Supplies Q3', 'Consulting - Strategy Review'. Used for spend classification.",
+    "Invoice Line Number Quantity":
+        "Number of units billed on this invoice line. Numeric, e.g. 100, 2.5. "
+        "Multiplied by Price per UOM to derive line-item spend.",
+    "Invoice Line Number Quantity UOM":
+        "Unit of measure for the invoice line quantity. E.g. EA (each), KG, L, HR (hours), MT. "
+        "Must match the UOM used in the corresponding PO line.",
+    "Local Currency Code":
+        "ISO 4217 three-letter currency code of the invoice amount in the country of transaction. "
+        "E.g. USD, EUR, GBP, INR. Distinct from the reporting/group currency.",
+    "Total Amount paid in Local Currency":
+        "Net invoice line amount expressed in the local transaction currency. "
+        "Numeric, can be negative for credit notes. Core field for spend analytics.",
+    "Total Amount paid in Reporting Currency":
+        "Invoice line amount converted to the company's single reporting / group currency (e.g. USD or EUR). "
+        "Used for cross-entity spend comparisons and dashboards.",
+    "Price per UOM":
+        "Unit price charged by the supplier for one unit of measure. "
+        "= Total Amount / Quantity. Used for price benchmarking and rationalization.",
+    "Contract indicator":
+        "Binary flag showing whether this invoice was covered by a formal contract. "
+        "Values: ON CONTRACT / OFF CONTRACT, Y/N, 1/0, Contracted/Non-contracted.",
+    "Fiscal Year":
+        "The company's fiscal year in which the invoice falls. Numeric, e.g. 2023, FY2024. "
+        "May differ from calendar year depending on company's fiscal calendar.",
+    "Payment date":
+        "Date the invoice was actually paid / cleared by accounts payable. "
+        "Used to measure payment-term compliance and Days Payable Outstanding (DPO).",
+    "Debit/ Credit Indicator":
+        "Indicates whether the posting increases (Debit/D/H) or decreases (Credit/C/S) the expense. "
+        "Credit entries represent reversals or credit notes from suppliers.",
+    "PO Indicator":
+        "Flag indicating whether a purchase order was raised for this transaction. "
+        "Values: PO / Non-PO, ON PO / OFF PO, Y/N. Drives maverick-spend analysis.",
+    "Invoice PO Number":
+        "Purchase Order number referenced on the invoice. Alphanumeric, e.g. PO-45001234, 4500012345. "
+        "Links invoice spend back to approved procurement documents.",
+    "Invoice PO Line Number":
+        "Specific line item within the referenced Purchase Order. Numeric, e.g. 1, 10, 20. "
+        "Together with PO Number it pinpoints the exact approved commitment.",
+    "PO Document Date":
+        "Date the Purchase Order was created / approved in the ERP system. "
+        "Used to measure procurement lead times and contract coverage.",
+    "PO Line Item Description 1":
+        "Primary free-text description from the PO line. E.g. 'Raw Material - Steel Coil HRC'. "
+        "May differ from the invoice description if goods were substituted.",
+    "PO Material Group Description":
+        "Human-readable label for the material/commodity group assigned to the PO line. "
+        "E.g. 'Office Supplies', 'MRO', 'IT Hardware'. Used for spend categorisation.",
+    "PO Material Number":
+        "Internal material or item number in the ERP/catalogue. Alphanumeric, e.g. MAT-00012, 100-200. "
+        "Used for price benchmarking and specification rationalization.",
+    "PO Material Description":
+        "Descriptive text for the ERP material master record linked to the PO line. "
+        "More standardised than free-text descriptions; used for like-for-like comparison.",
+    "PO Material Group Code":
+        "Alphanumeric code for the commodity/material group. E.g. L001, 00300, MRO-IT. "
+        "Used to roll up spend to category hierarchies.",
+    "PO Line Item Quantity":
+        "Quantity ordered on the PO line. Numeric. May differ from the invoiced quantity "
+        "if partial deliveries or over-deliveries occurred.",
+    "PO Line Item Quantity UOM":
+        "Unit of measure for the PO line quantity. E.g. EA, KG, MT, L, HR. "
+        "Should match Invoice Line Number Quantity UOM for three-way matching.",
+    "PO Local Currency Code":
+        "ISO currency code used when the PO was raised. E.g. EUR, USD. "
+        "May differ from invoice currency if FX rates changed between PO and invoice.",
+    "PO Line Item Unit Price":
+        "Agreed price per unit on the PO. Numeric. Benchmark for invoice price validation "
+        "and savings tracking (PO price vs invoice price).",
+    "PO Manufacturer part number":
+        "OEM or manufacturer's own part number for the item. Used in indirect/MRO procurement "
+        "to validate substitutions and support specification rationalization.",
+    "PO Manufacturer name":
+        "Name of the original equipment manufacturer (OEM). Distinct from the vendor/distributor. "
+        "Used in LCC sourcing and mega-supplier analysis.",
+    "PO Line Item Description 2":
+        "Secondary or supplemental description field on the PO line. "
+        "Some ERPs split long descriptions across two text fields.",
+    "PO Total Amount in Local Currency":
+        "Total committed value of the PO line in local currency. "
+        "Compared to invoiced amount to detect over-invoicing or under-delivery.",
+    "PO Total Amount in reporting currency":
+        "Total PO line commitment converted to reporting currency. "
+        "Used for budget tracking and category spend commitments.",
+    "Vendor Code":
+        "Unique supplier identifier in the ERP (e.g. SAP LIFNR). Alphanumeric, e.g. V10001, SUP-4532. "
+        "Primary key for all vendor master data lookups.",
+    "Vendor Name":
+        "Legal or trading name of the supplier. E.g. 'Acme Corp', 'Siemens AG'. "
+        "Used in supplier rationalization, mega-supplier, and benchmarking analyses.",
+    "Vendor Country":
+        "Country where the supplier is registered or where the supply originates. ISO or full name. "
+        "E.g. DE, India, United States. Core field for LCC sourcing analysis.",
+    "Vendor State":
+        "State or province of the supplier. E.g. Bavaria, California, Maharashtra. "
+        "Used for regional sourcing and tax compliance.",
+    "Vendor Preferred Status":
+        "Flag indicating whether the supplier has been approved as a preferred/strategic partner. "
+        "Values: Preferred / Non-preferred, Y/N, Strategic/Approved/Unapproved.",
+    "Vendor Address":
+        "Street address of the supplier. Used for logistics, tax and compliance purposes.",
+    "Vendor City":
+        "City of the supplier's registered or billing address.",
+    "Vendor Zip/Postal Code":
+        "Postal or ZIP code of the supplier's address. Used for geographic spend clustering.",
+    "Vendor Diversity":
+        "Indicates whether the supplier qualifies as a diverse/minority/women-owned business. "
+        "Values: MBE, WBE, MWBE, Yes/No, certified diversity category codes.",
+    "Business Unit":
+        "Internal business unit, profit center, or segment that owns the spend. "
+        "E.g. 'Marketing', 'Manufacturing - Plant A', 'IT'. Used for spend allocation.",
+    "Company Code":
+        "Legal entity code in the ERP (e.g. SAP BUKRS). Short alphanumeric, e.g. 1000, US01. "
+        "Identifies which legal company incurred the spend.",
+    "Company Name":
+        "Full legal name of the buying entity. E.g. 'Acme Inc.', 'XYZ GmbH'. "
+        "Used alongside Company Code for multi-entity reporting.",
+    "Company Country":
+        "Country of incorporation of the buying legal entity. E.g. USA, Germany, India.",
+    "Plant Name":
+        "Name of the manufacturing site, warehouse, or facility that ordered/received the goods. "
+        "E.g. 'Stuttgart Plant', 'Mumbai Warehouse'.",
+    "Plant Code":
+        "ERP code for the plant or facility (e.g. SAP WERKS). E.g. P001, IN01. "
+        "Used for centralized buying and plant-level spend analysis.",
+    "Plant Country":
+        "Country where the plant or facility is located. Used for cross-border procurement analysis.",
+    "Plant State":
+        "State or province where the plant is located.",
+    "Plant City":
+        "City where the plant is located.",
+    "Business Division":
+        "Higher-level grouping above Business Unit. E.g. 'EMEA Division', 'Consumer Products Division'. "
+        "Used for divisional roll-up reporting.",
+    "Contract ID":
+        "Unique identifier for the contract in the contract management system. "
+        "E.g. CTR-2024-001, AGR-5500012345. Links spend to negotiated agreements.",
+    "Contract party":
+        "Name of the counterparty (usually the supplier) in the contract. "
+        "May differ from invoicing vendor name if invoicing entity differs from contracted entity.",
+    "Contract End Date":
+        "Date on which the contract expires. Used to flag at-risk spend and drive renewals. "
+        "Critical for contract status and dynamic spend views.",
+    "Contract Start Date":
+        "Date the contract became effective. Used with end date to assess active coverage window.",
+    "Payment Terms":
+        "Agreed payment terms between buyer and supplier. E.g. Net 30, 2/10 Net 30, Net 60, "
+        "Immediate. Used for DPO optimisation and payment-terms rationalization.",
+    "Contract Status":
+        "Current lifecycle state of the contract. E.g. Active, Expired, Pending Renewal, "
+        "Terminated. Used to flag off-contract spend.",
+    "Contract Description":
+        "Free-text description of the contract scope. E.g. 'IT Services MSA 2024-2026'. "
+        "Helps map invoices to the correct contract.",
+    "Spend Classification Level 1":
+        "Top-level spend taxonomy category. E.g. 'Direct', 'Indirect', 'Services', 'Capex'. "
+        "Broadest bucketing for spend cube.",
+    "Spend Classification Level 2":
+        "Second-level spend taxonomy. E.g. 'Raw Materials', 'MRO', 'Professional Services'. "
+        "Narrows L1 into manageable sub-categories.",
+    "Spend Classification Level 3":
+        "Third-level spend taxonomy. E.g. 'Steel', 'Lubricants', 'Legal Services'. "
+        "Operationally actionable category level for sourcing.",
+    "Spend Classification Level 4":
+        "Most granular spend taxonomy level. E.g. 'Hot Rolled Coil', 'Hydraulic Oil 46'. "
+        "Used for specification rationalization and price benchmarking.",
+    "Procurement Contract Owner":
+        "Name or ID of the procurement professional responsible for managing the contract. "
+        "E.g. 'Jane Smith', 'Category Manager - IT'. Used for accountability reporting.",
+    "Cost Center Code":
+        "Accounting cost center code (e.g. SAP KOSTL). Alphanumeric, e.g. CC1001, 4100. "
+        "Defines which internal department bears the cost.",
+    "Cost Center Description":
+        "Human-readable name of the cost center. E.g. 'Finance - AP', 'R&D - Lab 3'. "
+        "Used alongside Cost Center Code for financial reporting.",
+    "GL Account":
+        "General Ledger account code (e.g. SAP SAKNR/HKONT). Numeric, e.g. 400000, 613100. "
+        "Classifies the type of expense (capex, opex, materials, services).",
+    "GL Account Description":
+        "Text label of the GL account. E.g. 'Raw Material Consumption', 'Travel & Entertainment'. "
+        "Used for finance-to-procurement spend alignment.",
+    "GL Account Hierarchy Level 1":
+        "Top node of the GL account hierarchy tree. Groups accounts into broad P&L or BS categories. "
+        "E.g. 'Operating Expenses', 'Cost of Goods Sold'.",
+    "GL Account Hierarchy Level 2":
+        "Second node of the GL hierarchy. Narrows the L1 grouping. "
+        "E.g. 'Selling & Distribution', 'Manufacturing Overhead'.",
+    "Currency Conversion rate":
+        "FX rate used to convert local currency to reporting currency at the time of posting. "
+        "Numeric decimal, e.g. 1.0823, 82.5. Critical for multi-currency reporting accuracy.",
+    "Data Source System":
+        "Name or code of the ERP or source system the record originated from. "
+        "E.g. SAP ECC, SAP S/4HANA, Oracle R12, Coupa, Ariba. Used for data lineage.",
+    "Transaction ID":
+        "Unique identifier for the financial posting or document in the source ERP. "
+        "E.g. FI document number, journal entry ID. Used for audit trail and deduplication.",
+}
+
 VIEW_CATEGORIES: dict[str, list[str]] = {
     "Contract": ["Contract Status", "Dynamic Spend View"],
     "Spend": [

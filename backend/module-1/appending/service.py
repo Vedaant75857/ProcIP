@@ -64,7 +64,10 @@ def _trim_payload(
 
 
 def run_append_plan(conn: sqlite3.Connection, api_key: str | None) -> dict[str, Any]:
-    files_payload = get_meta(conn, "filesPayload", []) or []
+    from data_loading.service import build_files_payload_from_db
+
+    files_payload = build_files_payload_from_db(conn)
+    set_meta(conn, "filesPayload", files_payload)
 
     registered = all_registered_tables(conn)
     tbl_entries = [

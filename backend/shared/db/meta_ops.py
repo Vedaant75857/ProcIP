@@ -21,13 +21,14 @@ def get_meta(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
         return default
 
 
-def set_meta(conn: sqlite3.Connection, key: str, value: Any) -> None:
+def set_meta(conn: sqlite3.Connection, key: str, value: Any, commit: bool = True) -> None:
     safe_value = json_safe(value)
     conn.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
         (key, json.dumps(safe_value, default=json_default)),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def delete_meta(conn: sqlite3.Connection, key: str) -> None:

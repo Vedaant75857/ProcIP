@@ -91,12 +91,13 @@ def safe_table_name(prefix: str, key: str) -> str:
     return f"{prefix}__{sanitised}"[:120]
 
 
-def register_table(conn: sqlite3.Connection, table_key: str, sql_name: str) -> None:
+def register_table(conn: sqlite3.Connection, table_key: str, sql_name: str, commit: bool = True) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO table_registry (table_key, sql_name) VALUES (?, ?)",
         (table_key, sql_name),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def lookup_sql_name(conn: sqlite3.Connection, table_key: str) -> str | None:

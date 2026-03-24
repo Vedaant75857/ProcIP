@@ -1,7 +1,8 @@
 {
   "Vendor Name": [
     "DOC. FORNITORE",
-    "FORNITORE_NOME"
+    "FORNITORE_NOME",
+    "FILE_NAME"
   ],
   "Invoice Number": [
     "FATT DATA DOC."
@@ -13,7 +14,9 @@
     "WBE"
   ],
   "Invoice Line Description": [
-    "WBE_DESC"
+    "WBE_DESC",
+    "PROFIT_CENTER_DESC",
+    "CENTRO_DI_COSTO_DESC"
   ],
   "Total Amount paid in Reporting Currency": [
     "DIVISA DI GRUPPO",
@@ -22,5 +25,14 @@
   "Total Amount paid in Local Currency": [
     "IMPORTO_DIVISA_DOCUMENTO",
     "IMPORTO_DIVISA_LOCALE"
+  ],
+  "Vendor Code": [
+    "FORNITORE"
+  ],
+  "Business Unit": [
+    "PROFIT CENTER"
+  ],
+  "Data Source System": [
+    "_source_table"
   ]
 }

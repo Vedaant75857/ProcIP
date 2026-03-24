@@ -15,13 +15,12 @@ from shared.db import (
     safe_table_name,
     register_table,
     store_table_streaming,
-    set_meta,
     table_exists,
     table_row_count,
     read_table_columns,
     quote_id,
 )
-from shared.utils import json_safe, make_unique
+from shared.utils import make_unique
 
 RAW_META_PREVIEW_ROWS = int(os.getenv("RAW_META_PREVIEW_ROWS", "20"))
 
@@ -56,110 +55,68 @@ def _is_empty_row(vals: list) -> bool:
     return all(v is None or str(v).strip() == "" for v in vals)
 
 
-def _iter_excel_rows(xlsx_bytes: bytes, sheet_name: str) -> Iterator[list[Any]]:
-    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
-    try:
-        ws = wb[sheet_name]
-        for row in ws.iter_rows(values_only=True):
-            yield list(row)
-    finally:
-        wb.close()
-
-
 def _iter_csv_rows(text: str) -> Iterator[list[str]]:
     reader = csv.reader(io.StringIO(text))
     for row in reader:
         yield list(row)
 
 
-def _store_raw_rows_table(
-    conn: sqlite3.Connection,
-    raw_table_name: str,
-    raw_arr: list[list[Any]],
-) -> None:
-    max_cols = max((len(r) for r in raw_arr), default=0)
-    if max_cols <= 0:
-        max_cols = 1
-    raw_cols = [f"RAW_{i + 1}" for i in range(max_cols)]
-
-    def _raw_row_gen():
-        for r in raw_arr:
-            vals = list(r)
-            if len(vals) < max_cols:
-                vals.extend([None] * (max_cols - len(vals)))
-            elif len(vals) > max_cols:
-                vals = vals[:max_cols]
-            yield vals
-
-    store_table_streaming(conn, raw_table_name, raw_cols, _raw_row_gen())
+def _pad_row(row: list, max_cols: int) -> list:
+    """Pad or truncate a row to exactly max_cols."""
+    if len(row) < max_cols:
+        return list(row) + [None] * (max_cols - len(row))
+    if len(row) > max_cols:
+        return list(row)[:max_cols]
+    return list(row)
 
 
 def _load_excel_sheet(
     conn: sqlite3.Connection,
     table_key: str,
-    wb_path_or_data: Any,
+    wb: openpyxl.Workbook,
     sheet_name: str,
-    raw_arrays: dict[str, list],
     warnings: list[dict],
+    commit: bool = True,
 ) -> None:
+    """Load a single Excel sheet using an already-open workbook (single-pass)."""
     try:
-        if isinstance(wb_path_or_data, (bytes, bytearray)):
-            xlsx_bytes = bytes(wb_path_or_data)
-        elif hasattr(wb_path_or_data, "getvalue"):
-            xlsx_bytes = wb_path_or_data.getvalue()
-        else:
-            xlsx_bytes = wb_path_or_data.read()
-
-        header_raw: list[Any] | None = None
-        max_cols = 0
-        preview_rows: list[list[Any]] = []
-        for r in _iter_excel_rows(xlsx_bytes, sheet_name):
-            max_cols = max(max_cols, len(r))
-            if header_raw is None:
-                header_raw = list(r)
-            if len(preview_rows) < RAW_META_PREVIEW_ROWS:
-                preview_rows.append(list(r))
-
-        if header_raw is None:
+        ws = wb[sheet_name]
+        all_rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        if not all_rows:
             return
 
-        raw_arrays[table_key] = json_safe(preview_rows)
-
+        header_raw = all_rows[0]
+        max_cols = max(len(r) for r in all_rows)
         if max_cols <= 0:
             max_cols = len(header_raw) if header_raw else 1
+
         raw_cols = [f"RAW_{i + 1}" for i in range(max_cols)]
-
-        def _raw_gen():
-            for r in _iter_excel_rows(xlsx_bytes, sheet_name):
-                vals = list(r)
-                if len(vals) < max_cols:
-                    vals.extend([None] * (max_cols - len(vals)))
-                elif len(vals) > max_cols:
-                    vals = vals[:max_cols]
-                yield vals
-
         raw_name = safe_table_name("raw", table_key)
-        store_table_streaming(conn, raw_name, raw_cols, _raw_gen())
+        store_table_streaming(
+            conn, raw_name, raw_cols,
+            (_pad_row(r, max_cols) for r in all_rows),
+            commit=commit,
+        )
 
         base_header = _clean_header(header_raw)
         file_name = _file_name_from_key(table_key)
         header = _META_COLUMNS + base_header
+        num_base = len(base_header)
 
         def _clean_gen():
-            first = True
             record_id = 0
-            for r in _iter_excel_rows(xlsx_bytes, sheet_name):
-                if first:
-                    first = False
-                    continue
+            for r in all_rows[1:]:
                 if _is_empty_row(r):
                     continue
                 record_id += 1
-                yield [file_name, str(record_id)] + [_clean_cell(r[i]) if i < len(r) else None for i in range(len(base_header))]
+                yield [file_name, str(record_id)] + [
+                    _clean_cell(r[i]) if i < len(r) else None
+                    for i in range(num_base)
+                ]
 
         tbl_name = safe_table_name("tbl", table_key)
-        store_table_streaming(conn, tbl_name, header, _clean_gen())
-        register_table(conn, table_key, tbl_name)
+        store_table_streaming(conn, tbl_name, header, _clean_gen(), commit=commit)
+        register_table(conn, table_key, tbl_name, commit=commit)
     except Exception as e:
         warnings.append({"file": table_key, "message": str(e)})
 
@@ -168,61 +125,48 @@ def _load_csv(
     conn: sqlite3.Connection,
     table_key: str,
     csv_bytes: bytes,
-    raw_arrays: dict[str, list],
     warnings: list[dict],
+    commit: bool = True,
 ) -> None:
+    """Load a CSV file using a single parse pass."""
     try:
         text = csv_bytes.decode("utf-8", errors="replace")
-        header_raw: list[Any] | None = None
-        max_cols = 0
-        preview_rows: list[list[Any]] = []
-        for r in _iter_csv_rows(text):
-            max_cols = max(max_cols, len(r))
-            if header_raw is None:
-                header_raw = list(r)
-            if len(preview_rows) < RAW_META_PREVIEW_ROWS:
-                preview_rows.append(list(r))
-
-        if header_raw is None:
+        all_rows = list(_iter_csv_rows(text))
+        if not all_rows:
             return
 
-        raw_arrays[table_key] = json_safe(preview_rows)
+        header_raw = all_rows[0]
+        max_cols = max(len(r) for r in all_rows)
         if max_cols <= 0:
             max_cols = len(header_raw) if header_raw else 1
+
         raw_cols = [f"RAW_{i + 1}" for i in range(max_cols)]
-
-        def _raw_gen():
-            for r in _iter_csv_rows(text):
-                vals = list(r)
-                if len(vals) < max_cols:
-                    vals.extend([None] * (max_cols - len(vals)))
-                elif len(vals) > max_cols:
-                    vals = vals[:max_cols]
-                yield vals
-
         raw_name = safe_table_name("raw", table_key)
-        store_table_streaming(conn, raw_name, raw_cols, _raw_gen())
+        store_table_streaming(
+            conn, raw_name, raw_cols,
+            (_pad_row(r, max_cols) for r in all_rows),
+            commit=commit,
+        )
 
         base_header = _clean_header(header_raw)
         file_name = _file_name_from_key(table_key)
         header = _META_COLUMNS + base_header
+        num_base = len(base_header)
 
         def _clean_gen():
-            first = True
             record_id = 0
-            for r in _iter_csv_rows(text):
-                if first:
-                    first = False
-                    continue
+            for r in all_rows[1:]:
                 if _is_empty_row(r):
                     continue
                 record_id += 1
-                yield [file_name, str(record_id)] + [_clean_cell(r[i]) if i < len(r) else None for i in range(len(base_header))]
+                yield [file_name, str(record_id)] + [
+                    _clean_cell(r[i]) if i < len(r) else None
+                    for i in range(num_base)
+                ]
 
         tbl_name = safe_table_name("tbl", table_key)
-        store_table_streaming(conn, tbl_name, header, _clean_gen())
-        register_table(conn, table_key, tbl_name)
-
+        store_table_streaming(conn, tbl_name, header, _clean_gen(), commit=commit)
+        register_table(conn, table_key, tbl_name, commit=commit)
     except Exception as e:
         warnings.append({"file": table_key, "message": str(e)})
 
@@ -230,9 +174,12 @@ def _load_csv(
 def load_zip_to_session(conn: sqlite3.Connection, file_data: bytes) -> tuple[dict[str, list], list[dict]]:
     """Parse a ZIP archive and stream all files into the session SQLite.
 
-    Returns (raw_arrays_dict, warnings_list).
+    Opens each Excel workbook exactly once and parses each file in a single
+    pass.  All DB writes are batched into one commit at the end.
+
+    Returns ({}, warnings_list).  The first element is kept for interface
+    compatibility but is always empty (raw data lives in raw__* tables).
     """
-    raw_arrays: dict[str, list] = {}
     warnings: list[dict] = []
 
     with zipfile.ZipFile(io.BytesIO(file_data)) as zf:
@@ -244,22 +191,24 @@ def load_zip_to_session(conn: sqlite3.Connection, file_data: bytes) -> tuple[dic
 
             if lower.endswith((".xlsx", ".xlsm")):
                 data = zf.read(name)
-                wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-                sheets = wb.sheetnames
-                wb.close()
-
-                for sheet in sheets:
-                    key = f"{name}::{sheet}"
-                    _load_excel_sheet(conn, key, io.BytesIO(data), sheet, raw_arrays, warnings)
+                wb = openpyxl.load_workbook(
+                    io.BytesIO(data), read_only=True, data_only=True,
+                )
+                try:
+                    for sheet in wb.sheetnames:
+                        key = f"{name}::{sheet}"
+                        _load_excel_sheet(
+                            conn, key, wb, sheet, warnings, commit=False,
+                        )
+                finally:
+                    wb.close()
 
             elif lower.endswith(".csv"):
                 key = f"{name}::"
-                _load_csv(conn, key, zf.read(name), raw_arrays, warnings)
+                _load_csv(conn, key, zf.read(name), warnings, commit=False)
 
-    for key, arr in raw_arrays.items():
-        set_meta(conn, f"rawArray__{key}", arr)
-
-    return raw_arrays, warnings
+    conn.commit()
+    return {}, warnings
 
 
 def get_raw_array_from_table(

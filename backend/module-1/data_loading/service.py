@@ -59,7 +59,10 @@ def build_inventory_from_db(conn: sqlite3.Connection) -> list[dict]:
     return rows
 
 
-def build_files_payload_from_db(conn: sqlite3.Connection) -> list[dict]:
+def build_files_payload_from_db(
+    conn: sqlite3.Connection,
+    skip_distinct: bool = False,
+) -> list[dict]:
     registered = all_registered_tables(conn)
     files: list[dict] = []
     for entry in registered:
@@ -92,11 +95,20 @@ def build_files_payload_from_db(conn: sqlite3.Connection) -> list[dict]:
             })
             continue
 
-        distinct_columns = cols[:MAX_COLUMNS_FOR_DISTINCT_EXAMPLES]
-        if n_rows > 200_000:
-            distinct_columns = cols[: max(8, MAX_COLUMNS_FOR_DISTINCT_EXAMPLES // 3)]
-        elif n_rows > 50_000:
-            distinct_columns = cols[: max(16, MAX_COLUMNS_FOR_DISTINCT_EXAMPLES // 2)]
+        if skip_distinct:
+            distinct_map: dict = {}
+        else:
+            distinct_columns = cols[:MAX_COLUMNS_FOR_DISTINCT_EXAMPLES]
+            if n_rows > 200_000:
+                distinct_columns = cols[: max(8, MAX_COLUMNS_FOR_DISTINCT_EXAMPLES // 3)]
+            elif n_rows > 50_000:
+                distinct_columns = cols[: max(16, MAX_COLUMNS_FOR_DISTINCT_EXAMPLES // 2)]
+            distinct_map = distinct_values_by_column_sql(
+                conn,
+                sql_name,
+                max_per_col=MAX_DISTINCT_VALUES_PER_COLUMN,
+                columns=distinct_columns,
+            )
 
         files.append({
             "table_key": table_key,
@@ -107,12 +119,7 @@ def build_files_payload_from_db(conn: sqlite3.Connection) -> list[dict]:
             "n_rows": n_rows,
             "n_cols": len(cols),
             "columns": cols[:MAX_COLUMNS_IN_FILES_PAYLOAD],
-            "distinct_examples_by_column": distinct_values_by_column_sql(
-                conn,
-                sql_name,
-                max_per_col=MAX_DISTINCT_VALUES_PER_COLUMN,
-                columns=distinct_columns,
-            ),
+            "distinct_examples_by_column": distinct_map,
             "empty": False,
         })
     return files

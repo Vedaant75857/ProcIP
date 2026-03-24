@@ -69,6 +69,7 @@ def store_table_streaming(
     table_name: str,
     columns: list[str],
     row_iterator: Iterator,
+    commit: bool = True,
 ) -> int:
     """Stream rows from an iterator directly into a SQLite table.
 
@@ -111,7 +112,8 @@ def store_table_streaming(
         conn.executemany(sql, batch)
         total += len(batch)
 
-    conn.commit()
+    if commit:
+        conn.commit()
     return total
 
 

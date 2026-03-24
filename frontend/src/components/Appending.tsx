@@ -407,38 +407,42 @@ export default function Appending({
                         <table className="min-w-full divide-y divide-neutral-200 dark:divide-neutral-700 text-sm">
                           <thead className="bg-neutral-50 dark:bg-neutral-800">
                             <tr>
-                              <th className="px-6 py-3 text-left text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">Canonical Column</th>
-                              {gm.per_table?.map((pt: any) => (
-                                <th key={pt.table_key} className="px-6 py-3 text-left text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider border-l border-neutral-100 dark:border-neutral-800">
-                                  {pt.table_key}
+                              <th className="sticky left-0 z-10 bg-neutral-50 dark:bg-neutral-800 px-6 py-3 text-left text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider min-w-[220px]">Table</th>
+                              {gm.canonical_schema?.map((col: string) => (
+                                <th key={col} className="px-4 py-3 text-left text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider border-l border-neutral-100 dark:border-neutral-800 whitespace-nowrap">
+                                  {col}
                                 </th>
                               ))}
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800 bg-white dark:bg-neutral-900">
-                            {gm.canonical_schema?.map((col: string) => (
-                              <tr key={col} className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/50 transition-colors">
-                                <td className="px-6 py-3 font-bold text-neutral-900 dark:text-white">{col}</td>
-                                {gm.per_table?.map((pt: any) => {
-                                  const sourceCols = sourceColumnsMap[pt.table_key] || [];
-                                  const currentValue = pt.column_mapping?.[col] || "";
-                                  return (
-                                    <td key={pt.table_key} className="px-4 py-2 border-l border-neutral-100 dark:border-neutral-800">
-                                      <select
-                                        value={currentValue}
-                                        onChange={(e) => updateMapping(pt.table_key, col, e.target.value || null)}
-                                        className="w-full text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent transition-shadow appearance-none"
-                                      >
-                                        <option value="">-- unmapped --</option>
-                                        {sourceCols.map((sc) => (
-                                          <option key={sc} value={sc}>{sc}</option>
-                                        ))}
-                                      </select>
-                                    </td>
-                                  );
-                                })}
-                              </tr>
-                            ))}
+                            {gm.per_table?.map((pt: any) => {
+                              const sourceCols = sourceColumnsMap[pt.table_key] || [];
+                              return (
+                                <tr key={pt.table_key} className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/50 transition-colors">
+                                  <td className="sticky left-0 z-10 bg-white dark:bg-neutral-900 px-6 py-3 font-bold text-neutral-900 dark:text-white text-xs whitespace-nowrap min-w-[220px] border-r border-neutral-100 dark:border-neutral-800">
+                                    {pt.table_key}
+                                  </td>
+                                  {gm.canonical_schema?.map((col: string) => {
+                                    const currentValue = pt.column_mapping?.[col] || "";
+                                    return (
+                                      <td key={col} className="px-3 py-2 border-l border-neutral-100 dark:border-neutral-800">
+                                        <select
+                                          value={currentValue}
+                                          onChange={(e) => updateMapping(pt.table_key, col, e.target.value || null)}
+                                          className="w-full min-w-[130px] text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent transition-shadow appearance-none"
+                                        >
+                                          <option value="">-- unmapped --</option>
+                                          {sourceCols.map((sc) => (
+                                            <option key={sc} value={sc}>{sc}</option>
+                                          ))}
+                                        </select>
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>

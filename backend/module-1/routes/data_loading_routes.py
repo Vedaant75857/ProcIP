@@ -50,7 +50,7 @@ def upload():
         _raw_arrays, warnings = load_zip_to_session(conn, file_data)
 
         inv = build_inventory_from_db(conn)
-        files_payload = build_files_payload_from_db(conn)
+        files_payload = build_files_payload_from_db(conn, skip_distinct=True)
         previews = build_previews_from_db(conn)
 
         set_meta(conn, "inv", inv)

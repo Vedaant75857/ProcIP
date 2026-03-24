@@ -7,7 +7,7 @@ interface CleaningConfig {
   removeNullRows: boolean;
   removeNullColumns: boolean;
   dropColumns: string[];
-  caseMode: "upper" | "lower";
+  caseMode: "upper" | "lower" | "none";
   trimWhitespace: boolean;
   columnTypes: Record<string, "string" | "number" | "date">;
   deduplicateColumns: string[];
@@ -49,7 +49,19 @@ export default function DataCleaning({
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [localConfig, setLocalConfig] = useState<CleaningConfig>(DEFAULT_CONFIG);
   const [expandedPreview, setExpandedPreview] = useState(true);
+  const [dedupeDropdownOpen, setDedupeDropdownOpen] = useState(false);
   const [groupPreviews, setGroupPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
+  const [dtypeMap, setDtypeMap] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    fetch("/api/standard-field-dtypes")
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(setDtypeMap)
+      .catch((err) => console.warn("[DataCleaning] Failed to load dtype defaults:", err));
+  }, []);
 
   useEffect(() => {
     if (groupSchema.length > 0 && !selectedGroup) {
@@ -67,8 +79,9 @@ export default function DataCleaning({
       });
       if (res.ok) {
         const data = await res.json();
-        if (data[groupId]) {
-          setGroupPreviews((prev) => ({ ...prev, [groupId]: { columns: data[groupId].columns, rows: data[groupId].rows } }));
+        const match = (data.previews || []).find((p: any) => p.group_id === groupId);
+        if (match) {
+          setGroupPreviews((prev) => ({ ...prev, [groupId]: { columns: match.columns || [], rows: match.rows || [] } }));
         }
       }
     } catch { /* ignore preview fetch errors */ }
@@ -84,9 +97,15 @@ export default function DataCleaning({
     if (selectedGroup && cleaningConfigs[selectedGroup]) {
       setLocalConfig({ ...DEFAULT_CONFIG, ...cleaningConfigs[selectedGroup] });
     } else {
-      setLocalConfig({ ...DEFAULT_CONFIG, deduplicateColumns: [] });
+      const schema = groupSchema.find((g) => g.group_id === selectedGroup);
+      const cols: string[] = schema?.columns || [];
+      const defaultTypes: Record<string, "string" | "number" | "date"> = {};
+      for (const col of cols) {
+        defaultTypes[col] = (dtypeMap[col] as "string" | "number" | "date") || "string";
+      }
+      setLocalConfig({ ...DEFAULT_CONFIG, columnTypes: defaultTypes, deduplicateColumns: [] });
     }
-  }, [selectedGroup, cleaningConfigs]);
+  }, [selectedGroup, cleaningConfigs, dtypeMap, groupSchema]);
 
   const currentSchema = selectedGroup ? groupSchema.find((g) => g.group_id === selectedGroup) : null;
   const currentPreview = selectedGroup ? groupPreviews[selectedGroup] : null;
@@ -242,25 +261,39 @@ export default function DataCleaning({
                   </div>
                 </label>
 
-                <div className="flex items-center gap-3 px-4 py-3 border border-neutral-200 dark:border-neutral-700 rounded-xl">
+                <label className="flex items-center gap-3 px-4 py-3 border border-neutral-200 dark:border-neutral-700 rounded-xl hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={localConfig.caseMode !== "none"}
+                    onChange={(e) =>
+                      setLocalConfig((p) => ({
+                        ...p,
+                        caseMode: e.target.checked ? "upper" : "none",
+                      }))
+                    }
+                    className="w-4 h-4 text-red-600 rounded border-neutral-300 focus:ring-red-500"
+                  />
                   <div className="flex-1">
                     <p className="text-xs font-bold text-neutral-900 dark:text-white">Standardize Case</p>
                     <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Apply to all text values</p>
                   </div>
-                  <select
-                    value={localConfig.caseMode}
-                    onChange={(e) => setLocalConfig((p) => ({ ...p, caseMode: e.target.value as "upper" | "lower" }))}
-                    className="text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 transition-shadow"
-                  >
-                    <option value="upper">UPPER CASE</option>
-                    <option value="lower">lower case</option>
-                  </select>
-                </div>
+                  {localConfig.caseMode !== "none" && (
+                    <select
+                      value={localConfig.caseMode}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setLocalConfig((p) => ({ ...p, caseMode: e.target.value as "upper" | "lower" }))}
+                      className="text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 transition-shadow"
+                    >
+                      <option value="upper">UPPER CASE</option>
+                      <option value="lower">lower case</option>
+                    </select>
+                  )}
+                </label>
               </div>
 
               {/* Remove Duplicates */}
-              <div className="border border-neutral-200 dark:border-neutral-700 rounded-xl overflow-hidden">
-                <div className="px-4 py-3 bg-neutral-50/50 dark:bg-neutral-800 border-b border-neutral-100 dark:border-neutral-800 flex items-center justify-between">
+              <div className="border border-neutral-200 dark:border-neutral-700 rounded-xl">
+                <div className="px-4 py-3 bg-neutral-50/50 dark:bg-neutral-800 border-b border-neutral-100 dark:border-neutral-800 rounded-t-xl flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Copy className="w-4 h-4 text-neutral-500 dark:text-neutral-400" />
                     <div>
@@ -287,33 +320,53 @@ export default function DataCleaning({
                       {" "}&mdash; rows with the same combination of these values will be deduplicated (first row kept).
                     </div>
                   )}
-                  <div className="flex flex-wrap gap-2">
-                    {visibleColumns.map((col: string) => {
-                      const isSelected = localConfig.deduplicateColumns.includes(col);
-                      return (
-                        <button
-                          key={col}
-                          type="button"
-                          onClick={() => toggleDeduplicateColumn(col)}
-                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                            isSelected
-                              ? "bg-red-50 dark:bg-red-950/30 border-red-300 text-red-700 dark:text-red-400 shadow-sm"
-                              : "bg-white dark:bg-neutral-900 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-600"
-                          }`}
-                        >
-                          <span className={`w-3 h-3 rounded-sm border flex items-center justify-center transition-colors ${
-                            isSelected ? "bg-red-600 border-red-600" : "border-neutral-300"
-                          }`}>
-                            {isSelected && <Check className="w-2 h-2 text-white" />}
-                          </span>
-                          {col}
-                        </button>
-                      );
-                    })}
+                  {/* Dropdown selector */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setDedupeDropdownOpen((o) => !o)}
+                      className="w-full flex items-center justify-between gap-2 px-3 py-2.5 border border-neutral-200 dark:border-neutral-700 rounded-lg bg-white dark:bg-neutral-900 text-xs transition-all hover:border-neutral-300 dark:hover:border-neutral-600 focus:outline-none focus:ring-2 focus:ring-neutral-400 dark:focus:ring-neutral-500"
+                    >
+                      <span className={localConfig.deduplicateColumns.length > 0 ? "text-neutral-900 dark:text-white font-medium" : "text-neutral-400 dark:text-neutral-500"}>
+                        {localConfig.deduplicateColumns.length > 0
+                          ? `${localConfig.deduplicateColumns.length} column${localConfig.deduplicateColumns.length !== 1 ? "s" : ""} selected`
+                          : "Select columns for deduplication…"}
+                      </span>
+                      <ChevronDown className={`w-3.5 h-3.5 text-neutral-400 transition-transform ${dedupeDropdownOpen ? "rotate-180" : ""}`} />
+                    </button>
+
+                    {dedupeDropdownOpen && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setDedupeDropdownOpen(false)} />
+                        <div className="absolute z-20 mt-1 w-full max-h-80 overflow-y-auto border border-neutral-200 dark:border-neutral-700 rounded-lg bg-white dark:bg-neutral-900 shadow-lg py-1">
+                          {visibleColumns.map((col: string) => {
+                            const isSelected = localConfig.deduplicateColumns.includes(col);
+                            return (
+                              <button
+                                key={col}
+                                type="button"
+                                onClick={() => toggleDeduplicateColumn(col)}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+                              >
+                                <span className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 transition-colors ${
+                                  isSelected ? "bg-red-600 border-red-600" : "border-neutral-300 dark:border-neutral-600"
+                                }`}>
+                                  {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                                </span>
+                                <span className={isSelected ? "text-neutral-900 dark:text-white font-medium" : "text-neutral-600 dark:text-neutral-300"}>
+                                  {col}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
                   </div>
+
                   {localConfig.deduplicateColumns.length === 0 && (
                     <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2 italic">
-                      No columns selected — deduplication is disabled. Click columns above to define your uniqueness key.
+                      No columns selected — deduplication is disabled.
                     </p>
                   )}
                 </div>

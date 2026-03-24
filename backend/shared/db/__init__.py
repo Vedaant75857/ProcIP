@@ -9,6 +9,7 @@ from .session_db import (
     lookup_sql_name,
     all_registered_tables,
     cleanup_stale_sessions,
+    cleanup_all_sessions,
     DB_DIR,
 )
 from .meta_ops import get_meta, set_meta, delete_meta, get_all_meta_keys
@@ -43,6 +44,7 @@ __all__ = [
     "lookup_sql_name",
     "all_registered_tables",
     "cleanup_stale_sessions",
+    "cleanup_all_sessions",
     "DB_DIR",
     "get_meta",
     "set_meta",

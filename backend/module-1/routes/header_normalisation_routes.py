@@ -10,7 +10,7 @@ import sys
 from flask import Blueprint, jsonify, request, send_file
 
 from shared.db import get_session_db, lookup_sql_name, read_table, read_table_columns, table_exists, table_row_count
-from routes.summary_routes import execute_operation_kernel
+from routes.summary_routes import execute_operation_kernel, _session_lock
 
 
 def _load_mod(name: str, path: str):
@@ -91,7 +91,8 @@ def header_norm_preview():
         if not session_id or not table_key:
             return jsonify({"error": "Missing sessionId or tableKey"}), 400
         conn = get_session_db(session_id)
-        result = get_table_preview(conn, table_key, int(limit))
+        with _session_lock(session_id):
+            result = get_table_preview(conn, table_key, int(limit))
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -114,20 +115,21 @@ def header_norm_group_preview():
         if not session_id:
             return jsonify({"error": "Missing sessionId"}), 400
         conn = get_session_db(session_id)
-        previews = []
-        for gid in group_ids:
-            sql = lookup_sql_name(conn, str(gid))
-            if not sql or not table_exists(conn, sql):
-                previews.append({"group_id": gid, "columns": [], "rows": [], "total_rows": 0})
-                continue
-            cols = read_table_columns(conn, sql)
-            rows = read_table(conn, sql, limit)
-            previews.append({
-                "group_id": gid,
-                "columns": cols,
-                "rows": rows,
-                "total_rows": table_row_count(conn, sql),
-            })
+        with _session_lock(session_id):
+            previews = []
+            for gid in group_ids:
+                sql = lookup_sql_name(conn, str(gid))
+                if not sql or not table_exists(conn, sql):
+                    previews.append({"group_id": gid, "columns": [], "rows": [], "total_rows": 0})
+                    continue
+                cols = read_table_columns(conn, sql)
+                rows = read_table(conn, sql, limit)
+                previews.append({
+                    "group_id": gid,
+                    "columns": cols,
+                    "rows": rows,
+                    "total_rows": table_row_count(conn, sql),
+                })
         return jsonify({"previews": previews})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -152,12 +154,13 @@ def header_norm_download_excel():
             return jsonify({"error": "Missing sessionId or groupId"}), 400
 
         conn = get_session_db(session_id)
-        sql = lookup_sql_name(conn, str(group_id))
-        if not sql or not table_exists(conn, sql):
-            return jsonify({"error": f"Table not found for group: {group_id}"}), 404
+        with _session_lock(session_id):
+            sql = lookup_sql_name(conn, str(group_id))
+            if not sql or not table_exists(conn, sql):
+                return jsonify({"error": f"Table not found for group: {group_id}"}), 404
 
-        cols = read_table_columns(conn, sql)
-        rows = read_table(conn, sql, 50)
+            cols = read_table_columns(conn, sql)
+            rows = read_table(conn, sql, 50)
 
         decisions_map = {str(d.get("source_col", "")): d for d in decisions}
 

@@ -8,7 +8,6 @@ Converts internal results to the UI-expected decision shape and persists.
 
 from __future__ import annotations
 
-import concurrent.futures
 import importlib.util
 import os
 import sys
@@ -81,8 +80,6 @@ _STD_FIELD_PAYLOAD = [
     }
     for f in STANDARD_FIELDS
 ]
-
-CONCURRENCY = 3
 
 merge_into_lookup(_engine_mod.ALIAS_LOOKUP)
 
@@ -207,8 +204,7 @@ def run_header_norm(
             "decisions": col_decisions,
         }
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        all_tables = list(pool.map(_process_table, tbl_entries))
+    all_tables = [_process_table(entry) for entry in tbl_entries]
 
     set_meta(conn, "headerNormDecisions", all_tables)
 

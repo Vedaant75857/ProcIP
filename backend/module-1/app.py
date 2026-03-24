@@ -1,5 +1,6 @@
 """Module 1 — Data Stitching API (Flask, port 3001)."""
 
+import atexit
 import os
 import sys
 import threading
@@ -16,7 +17,7 @@ from flask import Flask, g, request
 from flask_cors import CORS
 from flask.json.provider import DefaultJSONProvider
 
-from shared.db import cleanup_stale_sessions
+from shared.db import cleanup_stale_sessions, cleanup_all_sessions
 from shared.utils import json_default
 
 
@@ -51,19 +52,20 @@ def create_app() -> Flask:
             pass
         return resp
 
-    from routes.data_loading_routes import data_loading_bp
-    from routes.inventory_routes import inventory_bp
-    from routes.appending_routes import appending_bp
-    from routes.header_normalisation_routes import header_normalisation_bp
-    from routes.merging_routes import merging_bp
-    from routes.summary_routes import summary_bp
-
-    app.register_blueprint(data_loading_bp, url_prefix="/api")
-    app.register_blueprint(inventory_bp, url_prefix="/api")
-    app.register_blueprint(appending_bp, url_prefix="/api")
-    app.register_blueprint(header_normalisation_bp, url_prefix="/api")
-    app.register_blueprint(merging_bp, url_prefix="/api")
-    app.register_blueprint(summary_bp, url_prefix="/api")
+    _blueprints: list[tuple[str, str]] = [
+        ("routes.data_loading_routes", "data_loading_bp"),
+        ("routes.inventory_routes", "inventory_bp"),
+        ("routes.appending_routes", "appending_bp"),
+        ("routes.header_normalisation_routes", "header_normalisation_bp"),
+        ("routes.merging_routes", "merging_bp"),
+        ("routes.summary_routes", "summary_bp"),
+    ]
+    for mod_path, bp_attr in _blueprints:
+        try:
+            mod = __import__(mod_path, fromlist=[bp_attr])
+            app.register_blueprint(getattr(mod, bp_attr), url_prefix="/api")
+        except Exception as exc:
+            print(f"[Module-1] WARN: failed to load {mod_path}.{bp_attr}: {exc}")
 
     return app
 
@@ -78,6 +80,18 @@ def _session_cleanup_loop() -> None:
 
 
 app = create_app()
+
+_startup_cleaned = cleanup_all_sessions()
+if _startup_cleaned:
+    print(f"[Module-1] Startup: cleared {_startup_cleaned} leftover session(s).")
+
+
+def _on_exit():
+    cleaned = cleanup_all_sessions()
+    print(f"[Module-1] Shutdown: deleted {cleaned} session(s).")
+
+
+atexit.register(_on_exit)
 
 if __name__ == "__main__":
     t = threading.Thread(target=_session_cleanup_loop, daemon=True)

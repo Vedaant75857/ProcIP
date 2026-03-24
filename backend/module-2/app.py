@@ -1,3 +1,4 @@
+import atexit
 import os
 import sys
 
@@ -9,6 +10,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env.local"))
 
 from flask import Flask, jsonify
 from flask_cors import CORS
+from shared.db import cleanup_all_sessions
 
 
 def create_app():
@@ -36,6 +38,18 @@ def create_app():
 
 
 app = create_app()
+
+_startup_cleaned = cleanup_all_sessions()
+if _startup_cleaned:
+    print(f"[Module-2] Startup: cleared {_startup_cleaned} leftover session(s).")
+
+
+def _on_exit():
+    cleaned = cleanup_all_sessions()
+    print(f"[Module-2] Shutdown: deleted {cleaned} session(s).")
+
+
+atexit.register(_on_exit)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PYTHON_PORT", "5000"))

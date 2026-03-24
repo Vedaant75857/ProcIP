@@ -71,11 +71,6 @@ export default function App() {
     }
   }, []);
 
-  const forceDismissLoading = useCallback(() => {
-    setLoading(false);
-    setAiLoading(false);
-  }, []);
-
   const addLog = useCallback((stepName: string, type: LogEntry["type"], message: string) => {
     setStatusLog((prev) => [...prev, { id: ++logIdRef.current, timestamp: new Date(), step: stepName, type, message }]);
   }, []);
@@ -89,6 +84,17 @@ export default function App() {
     setMaxStepReached(prev => Math.max(prev, step));
     prevStepRef.current = step;
   }, [step]);
+
+  // Safety net: auto-clear aiLoading if stuck for more than 5 minutes
+  const AI_LOADING_TIMEOUT_MS = 5 * 60 * 1000;
+  useEffect(() => {
+    if (!aiLoading) return;
+    const timer = setTimeout(() => {
+      setAiLoading(false);
+      setLoading(false);
+    }, AI_LOADING_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [aiLoading]);
 
   // Step 2: Inventory
   const [inventory, setInventory] = useState<any[]>([]);
@@ -251,15 +257,31 @@ export default function App() {
   }, [sessionId, apiKey, mainGroupId, dimensionGroupIds, addLog]);
 
   const STORAGE_KEY = "datastitcher_session";
+  const APIKEY_STORAGE_KEY = "datastitcher_apikey";
 
-  // Hydrate lightweight state from localStorage, then recover full state from backend
+  // Persist apiKey separately in localStorage so it survives across sessions
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(APIKEY_STORAGE_KEY);
+      if (saved) setApiKey(saved);
+    } catch { /* ignore */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (apiKey) localStorage.setItem(APIKEY_STORAGE_KEY, apiKey);
+      else localStorage.removeItem(APIKEY_STORAGE_KEY);
+    } catch { /* ignore */ }
+  }, [apiKey]);
+
+  // Hydrate lightweight state from sessionStorage, then recover full state from backend
   useEffect(() => {
     let cancelled = false;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = sessionStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.apiKey) setApiKey(s.apiKey);
       if (s.stitchingMode === "pipeline" || s.stitchingMode === "modular") setStitchingMode(s.stitchingMode);
       if (s.step) { setStep(s.step); setMaxStepReached(s.maxStepReached || s.step); }
       if (s.excludedTables) setExcludedTables(s.excludedTables);
@@ -272,38 +294,32 @@ export default function App() {
       if (!sid) return;
       setSessionId(sid);
 
-      // Recover full state from the backend using the persisted sessionId
       (async () => {
         try {
           const res = await fetch(`/api/execution/state?sessionId=${encodeURIComponent(sid)}`);
-          if (!res.ok || cancelled) return;
+          if (!res.ok || cancelled) {
+            sessionStorage.removeItem(STORAGE_KEY);
+            setSessionId("");
+            setStep(1);
+            setMaxStepReached(1);
+            return;
+          }
           const data = await res.json();
           if (cancelled) return;
-          applyStatePatch(data.statePatch || {});
+          const patch = data.statePatch || {};
+          if (!patch.inventory || (Array.isArray(patch.inventory) && patch.inventory.length === 0)) {
+            sessionStorage.removeItem(STORAGE_KEY);
+            setSessionId("");
+            setStep(1);
+            setMaxStepReached(1);
+            return;
+          }
+          applyStatePatch(patch);
         } catch {
-          // Backend unavailable — fall back to whatever localStorage had
-          if (s.inventory) setInventory(s.inventory);
-          if (s.headerNormDecisions) setHeaderNormDecisions(s.headerNormDecisions);
-          if (s.headerNormStandardFields) setHeaderNormStandardFields(s.headerNormStandardFields);
-          if (s.appendGroups) setAppendGroups(s.appendGroups);
-          if (s.unassigned) setUnassigned(s.unassigned);
-          if (s.appendGroupMappings) setAppendGroupMappings(s.appendGroupMappings);
-          if (s.groupSchema) setGroupSchema(s.groupSchema);
-          if (s.appendReport) setAppendReport(s.appendReport);
-          if (s.mergeKeys) setMergeKeys(s.mergeKeys);
-          if (s.mainGroupId) setMainGroupId(s.mainGroupId);
-          if (s.mergeResult) setMergeResult(s.mergeResult);
-          if (s.procurementMappings) setProcurementMappings(s.procurementMappings);
-          if (s.standardFields) setStandardFields(s.standardFields);
-          if (s.analysisResults) setAnalysisResults(s.analysisResults);
-          if (s.previews) setPreviews(s.previews);
-          if (s.uploadWarnings) setUploadWarnings(s.uploadWarnings);
-          if (s.groupInsights) setGroupInsights(s.groupInsights);
-          if (s.groupReports) setGroupReports(s.groupReports);
-          if (s.crossGroupOverview) setCrossGroupOverview(s.crossGroupOverview);
-          if (s.mergeCompatibility) setMergeCompatibility(s.mergeCompatibility);
-          if (s.viewCategories) setViewCategories(s.viewCategories);
-          if (s.viewRequirements) setViewRequirements(s.viewRequirements);
+          sessionStorage.removeItem(STORAGE_KEY);
+          setSessionId("");
+          setStep(1);
+          setMaxStepReached(1);
         }
       })();
     } catch { /* ignore corrupt storage */ }
@@ -311,13 +327,13 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist to localStorage on state changes (lightweight — backend is source of truth)
+  // Persist to sessionStorage on state changes (clears when tab closes)
   useEffect(() => {
     if (!sessionId) return;
     try {
       const persistable = {
         stitchingMode,
-        sessionId, apiKey, step, maxStepReached,
+        sessionId, step, maxStepReached,
         inventory, previews, uploadWarnings,
         cleaningConfigs,
         headerNormDecisions, headerNormStandardFields,
@@ -331,11 +347,11 @@ export default function App() {
         procurementMappings, standardFields, viewCategories, viewRequirements,
         possibleViews,
       };
-      localStorage.setItem(STORAGE_KEY, jsonSafeStringify(persistable));
+      sessionStorage.setItem(STORAGE_KEY, jsonSafeStringify(persistable));
     } catch { /* storage full or serialization error */ }
   }, [
     stitchingMode,
-    sessionId, apiKey, step, maxStepReached,
+    sessionId, step, maxStepReached,
     inventory, previews, uploadWarnings,
     cleaningConfigs,
     headerNormDecisions, headerNormStandardFields,
@@ -635,8 +651,13 @@ export default function App() {
         });
         if (hnRes.ok) {
           const hnData = await hnRes.json();
-          if (groupIds.some((gid: string) => hnData[gid])) {
-            data = hnData;
+          const previews = hnData.previews || [];
+          if (previews.length > 0) {
+            const mapped: any = {};
+            for (const p of previews) { mapped[p.group_id] = p; }
+            if (groupIds.some((gid: string) => mapped[gid])) {
+              data = mapped;
+            }
           }
         }
 
@@ -1872,7 +1893,7 @@ export default function App() {
               </motion.div>
             </AnimatePresence>
 
-            <LoadingOverlay isLoading={aiLoading} message={loadingMessage} onCancel={cancelAiRequest} onForceDismiss={forceDismissLoading} />
+            <LoadingOverlay isLoading={aiLoading} message={loadingMessage} onCancel={cancelAiRequest} />
             </>
             )}
             </>

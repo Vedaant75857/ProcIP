@@ -6,8 +6,14 @@ from flask import Blueprint, jsonify, request
 
 from shared.db import get_session_db
 from inventory.service import clean_table_sql, clean_group_sql, delete_rows_sql
+from inventory.dtype_defaults import STANDARD_FIELD_DTYPES
 
 inventory_bp = Blueprint("inventory_bp", __name__)
+
+
+@inventory_bp.route("/standard-field-dtypes", methods=["GET"])
+def standard_field_dtypes():
+    return jsonify(STANDARD_FIELD_DTYPES)
 
 
 @inventory_bp.route("/clean-table", methods=["POST"])

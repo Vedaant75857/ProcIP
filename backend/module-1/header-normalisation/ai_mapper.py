@@ -192,7 +192,7 @@ Rules:
             if not isinstance(parsed, list):
                 parsed = []
 
-            result_by_idx = {int(r.get("idx", -1)): r for r in parsed}
+            result_by_idx = {int(r.get("idx", -1)): r for r in parsed if isinstance(r, dict)}
 
             for i, item in enumerate(batch):
                 result = result_by_idx.get(i)
@@ -331,7 +331,7 @@ Rules:
             if not isinstance(parsed, list):
                 parsed = []
 
-            result_by_idx = {int(r.get("idx", -1)): r for r in parsed}
+            result_by_idx = {int(r.get("idx", -1)): r for r in parsed if isinstance(r, dict)}
 
             for i, item in enumerate(batch):
                 result = result_by_idx.get(i)

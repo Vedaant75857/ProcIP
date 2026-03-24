@@ -133,4 +133,30 @@ def cleanup_stale_sessions(max_age_ms: int = 24 * 60 * 60 * 1000) -> int:
     return cleaned
 
 
+def cleanup_all_sessions() -> int:
+    """Close every cached connection and delete all session SQLite files."""
+    cleaned = 0
+    with _db_lock:
+        for sid, conn in list(_db_cache.items()):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _db_cache.clear()
+
+    try:
+        for f in os.listdir(_DB_DIR):
+            if not f.endswith((".sqlite", ".sqlite-wal", ".sqlite-shm")):
+                continue
+            try:
+                os.unlink(os.path.join(_DB_DIR, f))
+                if f.endswith(".sqlite"):
+                    cleaned += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return cleaned
+
+
 DB_DIR = _DB_DIR

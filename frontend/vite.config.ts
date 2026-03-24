@@ -22,11 +22,13 @@ export default defineConfig(({ mode }) => {
         '/api/normalize': {
           target: 'http://localhost:5000',
           changeOrigin: true,
+          timeout: 600000,
           rewrite: (path: string) => path.replace(/^\/api\/normalize/, '/api'),
         },
         '/api': {
           target: 'http://localhost:3001',
           changeOrigin: true,
+          timeout: 600000,
         },
       },
     },

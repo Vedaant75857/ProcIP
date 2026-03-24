@@ -106,7 +106,7 @@ function NormTable({
                         const action = normalizeAction(e.target.value);
                         onUpdateDecision(col, {
                           action,
-                          mapped_to: action === "DROP" || action === "KEEP" ? null : (d?.mapped_to || d?.suggested_std_field || null),
+                          mapped_to: d?.mapped_to || d?.suggested_std_field || null,
                         });
                       }}
                       className={`w-full px-1.5 py-1 rounded text-[10px] font-bold border cursor-pointer ${ACTION_COLORS[d?.action || "KEEP"]}`}
@@ -127,14 +127,12 @@ function NormTable({
               </th>
               {columns.map((col) => {
                 const d = decisionMap[col];
-                const isDisabled = d?.action === "DROP" || d?.action === "KEEP";
                 return (
                   <th key={`target-${col}`} className="px-1 py-1 border-b border-r border-neutral-300 dark:border-neutral-700">
                     <select
                       value={d?.mapped_to || ""}
-                      disabled={isDisabled}
                       onChange={(e) => onUpdateDecision(col, { mapped_to: e.target.value || null })}
-                      className="w-full px-1.5 py-1 rounded text-[10px] font-semibold border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="w-full px-1.5 py-1 rounded text-[10px] font-semibold border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900"
                     >
                       <option value="">-- Unmapped --</option>
                       {d?.top_alternatives && d.top_alternatives.length > 0 && (
@@ -397,7 +395,7 @@ export default function HeaderNormalisation({
         reason: String(d.reason || ""),
         action: normalizeAction(d.action),
         top_alternatives: Array.isArray(d.top_alternatives) ? d.top_alternatives.map((x: any) => String(x)) : [],
-        mapped_to: d.action === "DROP" || d.action === "KEEP" ? null : (d.suggested_std_field || null),
+        mapped_to: d.suggested_std_field || null,
       }));
     }
     setEdited(next);
@@ -436,10 +434,7 @@ export default function HeaderNormalisation({
       payload[tableKey] = arr.map((d) => ({
         ...d,
         action: normalizeAction(d.action),
-        suggested_std_field:
-          d.action === "DROP" || d.action === "KEEP"
-            ? null
-            : (d.mapped_to || d.suggested_std_field || null),
+        suggested_std_field: d.mapped_to || d.suggested_std_field || null,
       }));
     }
     onApply(payload);

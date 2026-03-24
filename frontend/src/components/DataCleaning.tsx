@@ -49,6 +49,7 @@ export default function DataCleaning({
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [localConfig, setLocalConfig] = useState<CleaningConfig>(DEFAULT_CONFIG);
   const [expandedPreview, setExpandedPreview] = useState(true);
+  const [optionalExpanded, setOptionalExpanded] = useState(true);
   const [dedupeDropdownOpen, setDedupeDropdownOpen] = useState(false);
   const [groupPreviews, setGroupPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
   const [dtypeMap, setDtypeMap] = useState<Record<string, string>>({});
@@ -220,222 +221,253 @@ export default function DataCleaning({
                 </PrimaryButton>
               </div>
 
-              {/* Table-level options */}
-              <div className="grid grid-cols-2 gap-4">
-                <label className="flex items-center gap-3 px-4 py-3 border border-neutral-200 dark:border-neutral-700 rounded-xl hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={localConfig.removeNullRows}
-                    onChange={(e) => setLocalConfig((p) => ({ ...p, removeNullRows: e.target.checked }))}
-                    className="w-4 h-4 text-red-600 rounded border-neutral-300 focus:ring-red-500"
-                  />
-                  <div>
-                    <p className="text-xs font-bold text-neutral-900 dark:text-white">Remove Null Rows</p>
-                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Drop rows where all values are empty</p>
-                  </div>
-                </label>
-
-                <label className="flex items-center gap-3 px-4 py-3 border border-neutral-200 dark:border-neutral-700 rounded-xl hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={localConfig.removeNullColumns}
-                    onChange={(e) => setLocalConfig((p) => ({ ...p, removeNullColumns: e.target.checked }))}
-                    className="w-4 h-4 text-red-600 rounded border-neutral-300 focus:ring-red-500"
-                  />
-                  <div>
-                    <p className="text-xs font-bold text-neutral-900 dark:text-white">Remove Null Columns</p>
-                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Drop columns where all values are empty</p>
-                  </div>
-                </label>
-
-                <label className="flex items-center gap-3 px-4 py-3 border border-neutral-200 dark:border-neutral-700 rounded-xl hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={localConfig.trimWhitespace}
-                    onChange={(e) => setLocalConfig((p) => ({ ...p, trimWhitespace: e.target.checked }))}
-                    className="w-4 h-4 text-red-600 rounded border-neutral-300 focus:ring-red-500"
-                  />
-                  <div>
-                    <p className="text-xs font-bold text-neutral-900 dark:text-white">Trim Whitespace</p>
-                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Remove leading/trailing spaces</p>
-                  </div>
-                </label>
-
-                <label className="flex items-center gap-3 px-4 py-3 border border-neutral-200 dark:border-neutral-700 rounded-xl hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={localConfig.caseMode !== "none"}
-                    onChange={(e) =>
-                      setLocalConfig((p) => ({
-                        ...p,
-                        caseMode: e.target.checked ? "upper" : "none",
-                      }))
-                    }
-                    className="w-4 h-4 text-red-600 rounded border-neutral-300 focus:ring-red-500"
-                  />
-                  <div className="flex-1">
-                    <p className="text-xs font-bold text-neutral-900 dark:text-white">Standardize Case</p>
-                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Apply to all text values</p>
-                  </div>
-                  {localConfig.caseMode !== "none" && (
-                    <select
-                      value={localConfig.caseMode}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => setLocalConfig((p) => ({ ...p, caseMode: e.target.value as "upper" | "lower" }))}
-                      className="text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 transition-shadow"
-                    >
-                      <option value="upper">UPPER CASE</option>
-                      <option value="lower">lower case</option>
-                    </select>
-                  )}
-                </label>
-              </div>
-
-              {/* Remove Duplicates */}
-              <div className="border border-neutral-200 dark:border-neutral-700 rounded-xl">
-                <div className="px-4 py-3 bg-neutral-50/50 dark:bg-neutral-800 border-b border-neutral-100 dark:border-neutral-800 rounded-t-xl flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Copy className="w-4 h-4 text-neutral-500 dark:text-neutral-400" />
-                    <div>
-                      <p className="text-xs font-bold text-neutral-900 dark:text-white">Remove Duplicates</p>
-                      <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                        Select columns that define uniqueness — only the first occurrence of each combination is kept
-                      </p>
-                    </div>
-                  </div>
-                  {localConfig.deduplicateColumns.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setLocalConfig((p) => ({ ...p, deduplicateColumns: [] }))}
-                      className="text-[10px] font-medium text-red-500 hover:text-red-700 transition-colors"
-                    >
-                      Clear all
-                    </button>
-                  )}
+              {/* Best Practices */}
+              <div className="border border-neutral-200 dark:border-neutral-700 rounded-xl overflow-hidden">
+                <div className="px-4 py-3 bg-emerald-50/60 dark:bg-emerald-950/20 border-b border-neutral-200 dark:border-neutral-700">
+                  <p className="text-xs font-bold text-emerald-700 dark:text-emerald-400">Best Practices</p>
+                  <p className="text-[10px] text-emerald-600/70 dark:text-emerald-500/70">These steps are applied by default</p>
                 </div>
                 <div className="p-4">
-                  {localConfig.deduplicateColumns.length > 0 && (
-                    <div className="mb-3 px-3 py-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg text-[11px] text-amber-700 dark:text-amber-400">
-                      Uniqueness key: <span className="font-bold">{localConfig.deduplicateColumns.join(" + ")}</span>
-                      {" "}&mdash; rows with the same combination of these values will be deduplicated (first row kept).
-                    </div>
-                  )}
-                  {/* Dropdown selector */}
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setDedupeDropdownOpen((o) => !o)}
-                      className="w-full flex items-center justify-between gap-2 px-3 py-2.5 border border-neutral-200 dark:border-neutral-700 rounded-lg bg-white dark:bg-neutral-900 text-xs transition-all hover:border-neutral-300 dark:hover:border-neutral-600 focus:outline-none focus:ring-2 focus:ring-neutral-400 dark:focus:ring-neutral-500"
-                    >
-                      <span className={localConfig.deduplicateColumns.length > 0 ? "text-neutral-900 dark:text-white font-medium" : "text-neutral-400 dark:text-neutral-500"}>
-                        {localConfig.deduplicateColumns.length > 0
-                          ? `${localConfig.deduplicateColumns.length} column${localConfig.deduplicateColumns.length !== 1 ? "s" : ""} selected`
-                          : "Select columns for deduplication…"}
-                      </span>
-                      <ChevronDown className={`w-3.5 h-3.5 text-neutral-400 transition-transform ${dedupeDropdownOpen ? "rotate-180" : ""}`} />
-                    </button>
+                  <div className="grid grid-cols-2 gap-4">
+                    <label className="flex items-center gap-3 px-4 py-3 border border-neutral-200 dark:border-neutral-700 rounded-xl hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={localConfig.removeNullRows}
+                        onChange={(e) => setLocalConfig((p) => ({ ...p, removeNullRows: e.target.checked }))}
+                        className="w-4 h-4 text-red-600 rounded border-neutral-300 focus:ring-red-500"
+                      />
+                      <div>
+                        <p className="text-xs font-bold text-neutral-900 dark:text-white">Remove Null Rows</p>
+                        <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Drop rows where all values are empty</p>
+                      </div>
+                    </label>
 
-                    {dedupeDropdownOpen && (
-                      <>
-                        <div className="fixed inset-0 z-10" onClick={() => setDedupeDropdownOpen(false)} />
-                        <div className="absolute z-20 mt-1 w-full max-h-80 overflow-y-auto border border-neutral-200 dark:border-neutral-700 rounded-lg bg-white dark:bg-neutral-900 shadow-lg py-1">
-                          {visibleColumns.map((col: string) => {
-                            const isSelected = localConfig.deduplicateColumns.includes(col);
-                            return (
-                              <button
-                                key={col}
-                                type="button"
-                                onClick={() => toggleDeduplicateColumn(col)}
-                                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
-                              >
-                                <span className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 transition-colors ${
-                                  isSelected ? "bg-red-600 border-red-600" : "border-neutral-300 dark:border-neutral-600"
-                                }`}>
-                                  {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
-                                </span>
-                                <span className={isSelected ? "text-neutral-900 dark:text-white font-medium" : "text-neutral-600 dark:text-neutral-300"}>
-                                  {col}
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </>
-                    )}
+                    <label className="flex items-center gap-3 px-4 py-3 border border-neutral-200 dark:border-neutral-700 rounded-xl hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={localConfig.removeNullColumns}
+                        onChange={(e) => setLocalConfig((p) => ({ ...p, removeNullColumns: e.target.checked }))}
+                        className="w-4 h-4 text-red-600 rounded border-neutral-300 focus:ring-red-500"
+                      />
+                      <div>
+                        <p className="text-xs font-bold text-neutral-900 dark:text-white">Remove Null Columns</p>
+                        <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Drop columns where all values are empty</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-center gap-3 px-4 py-3 border border-neutral-200 dark:border-neutral-700 rounded-xl hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={localConfig.trimWhitespace}
+                        onChange={(e) => setLocalConfig((p) => ({ ...p, trimWhitespace: e.target.checked }))}
+                        className="w-4 h-4 text-red-600 rounded border-neutral-300 focus:ring-red-500"
+                      />
+                      <div>
+                        <p className="text-xs font-bold text-neutral-900 dark:text-white">Trim Whitespace</p>
+                        <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Remove leading/trailing spaces</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-center gap-3 px-4 py-3 border border-neutral-200 dark:border-neutral-700 rounded-xl hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={localConfig.caseMode !== "none"}
+                        onChange={(e) =>
+                          setLocalConfig((p) => ({
+                            ...p,
+                            caseMode: e.target.checked ? "upper" : "none",
+                          }))
+                        }
+                        className="w-4 h-4 text-red-600 rounded border-neutral-300 focus:ring-red-500"
+                      />
+                      <div className="flex-1">
+                        <p className="text-xs font-bold text-neutral-900 dark:text-white">Standardize Case</p>
+                        <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Apply to all text values</p>
+                      </div>
+                      {localConfig.caseMode !== "none" && (
+                        <select
+                          value={localConfig.caseMode}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setLocalConfig((p) => ({ ...p, caseMode: e.target.value as "upper" | "lower" }))}
+                          className="text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 transition-shadow"
+                        >
+                          <option value="upper">UPPER CASE</option>
+                          <option value="lower">lower case</option>
+                        </select>
+                      )}
+                    </label>
                   </div>
-
-                  {localConfig.deduplicateColumns.length === 0 && (
-                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2 italic">
-                      No columns selected — deduplication is disabled.
-                    </p>
-                  )}
                 </div>
               </div>
 
-              {/* Column controls */}
-              <div>
-                <p className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-3">
-                  Column Settings
-                  {localConfig.dropColumns.length > 0 && (
-                    <span className="ml-2 text-red-500 normal-case">
-                      ({localConfig.dropColumns.length} column{localConfig.dropColumns.length !== 1 ? "s" : ""} marked for removal)
-                    </span>
+              {/* Optional */}
+              <div className="border border-neutral-200 dark:border-neutral-700 rounded-xl overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setOptionalExpanded((v) => !v)}
+                  className="w-full px-4 py-3 bg-neutral-50/60 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700 flex items-center justify-between cursor-pointer hover:bg-neutral-100/60 dark:hover:bg-neutral-700/60 transition-colors"
+                >
+                  <div className="text-left">
+                    <p className="text-xs font-bold text-neutral-600 dark:text-neutral-300">Optional</p>
+                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Additional cleaning options</p>
+                  </div>
+                  {optionalExpanded ? (
+                    <ChevronDown className="w-4 h-4 text-neutral-400 dark:text-neutral-500 shrink-0" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-neutral-400 dark:text-neutral-500 shrink-0" />
                   )}
-                </p>
-                <div className="border border-neutral-200 dark:border-neutral-700 rounded-xl overflow-hidden">
-                  <table className="min-w-full text-xs">
-                    <thead className="bg-neutral-50 dark:bg-neutral-800">
-                      <tr>
-                        <th className="px-4 py-2.5 text-left font-bold text-neutral-500 dark:text-neutral-400 w-8">Keep</th>
-                        <th className="px-4 py-2.5 text-left font-bold text-neutral-500 dark:text-neutral-400">Column Name</th>
-                        <th className="px-4 py-2.5 text-left font-bold text-neutral-500 dark:text-neutral-400">Sample Values</th>
-                        <th className="px-4 py-2.5 text-left font-bold text-neutral-500 dark:text-neutral-400 w-32">Data Type</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                      {columns.map((col: string) => {
-                        const isDropped = localConfig.dropColumns.includes(col);
-                        const samples = (currentPreview?.rows || [])
-                          .map((r: any) => r[col])
-                          .filter((v: any) => v !== null && v !== undefined && v !== "")
-                          .slice(0, 3);
-                        return (
-                          <tr
-                            key={col}
-                            className={`transition-colors ${isDropped ? "bg-red-50/50 dark:bg-red-950/30 opacity-60" : "hover:bg-neutral-50/50 dark:hover:bg-neutral-800"}`}
+                </button>
+
+                {optionalExpanded && (
+                  <div className="p-4 space-y-6">
+                    {/* Remove Duplicates */}
+                    <div className="border border-neutral-200 dark:border-neutral-700 rounded-xl">
+                      <div className="px-4 py-3 bg-neutral-50/50 dark:bg-neutral-800 border-b border-neutral-100 dark:border-neutral-800 rounded-t-xl flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Copy className="w-4 h-4 text-neutral-500 dark:text-neutral-400" />
+                          <div>
+                            <p className="text-xs font-bold text-neutral-900 dark:text-white">Remove Duplicates</p>
+                            <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                              Select columns that define uniqueness — only the first occurrence of each combination is kept
+                            </p>
+                          </div>
+                        </div>
+                        {localConfig.deduplicateColumns.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setLocalConfig((p) => ({ ...p, deduplicateColumns: [] }))}
+                            className="text-[10px] font-medium text-red-500 hover:text-red-700 transition-colors"
                           >
-                            <td className="px-4 py-2">
-                              <input
-                                type="checkbox"
-                                checked={!isDropped}
-                                onChange={() => toggleDropColumn(col)}
-                                className="w-3.5 h-3.5 text-red-600 rounded border-neutral-300 focus:ring-red-500"
-                              />
-                            </td>
-                            <td className={`px-4 py-2 font-bold ${isDropped ? "line-through text-neutral-400 dark:text-neutral-500" : "text-neutral-900 dark:text-white"}`}>
-                              {col}
-                            </td>
-                            <td className="px-4 py-2 text-neutral-500 dark:text-neutral-400 max-w-[200px] truncate">
-                              {samples.length > 0 ? samples.map(String).join(", ") : <span className="italic text-neutral-300 dark:text-neutral-600">empty</span>}
-                            </td>
-                            <td className="px-4 py-2">
-                              <select
-                                value={localConfig.columnTypes[col] || "string"}
-                                onChange={(e) => setColumnType(col, e.target.value as any)}
-                                disabled={isDropped}
-                                className="w-full text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-40 transition-shadow"
-                              >
-                                <option value="string">String</option>
-                                <option value="number">Number</option>
-                                <option value="date">Date</option>
-                              </select>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                            Clear all
+                          </button>
+                        )}
+                      </div>
+                      <div className="p-4">
+                        {localConfig.deduplicateColumns.length > 0 && (
+                          <div className="mb-3 px-3 py-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg text-[11px] text-amber-700 dark:text-amber-400">
+                            Uniqueness key: <span className="font-bold">{localConfig.deduplicateColumns.join(" + ")}</span>
+                            {" "}&mdash; rows with the same combination of these values will be deduplicated (first row kept).
+                          </div>
+                        )}
+                        {/* Dropdown selector */}
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setDedupeDropdownOpen((o) => !o)}
+                            className="w-full flex items-center justify-between gap-2 px-3 py-2.5 border border-neutral-200 dark:border-neutral-700 rounded-lg bg-white dark:bg-neutral-900 text-xs transition-all hover:border-neutral-300 dark:hover:border-neutral-600 focus:outline-none focus:ring-2 focus:ring-neutral-400 dark:focus:ring-neutral-500"
+                          >
+                            <span className={localConfig.deduplicateColumns.length > 0 ? "text-neutral-900 dark:text-white font-medium" : "text-neutral-400 dark:text-neutral-500"}>
+                              {localConfig.deduplicateColumns.length > 0
+                                ? `${localConfig.deduplicateColumns.length} column${localConfig.deduplicateColumns.length !== 1 ? "s" : ""} selected`
+                                : "Select columns for deduplication…"}
+                            </span>
+                            <ChevronDown className={`w-3.5 h-3.5 text-neutral-400 transition-transform ${dedupeDropdownOpen ? "rotate-180" : ""}`} />
+                          </button>
+
+                          {dedupeDropdownOpen && (
+                            <>
+                              <div className="fixed inset-0 z-10" onClick={() => setDedupeDropdownOpen(false)} />
+                              <div className="absolute z-20 mt-1 w-full max-h-80 overflow-y-auto border border-neutral-200 dark:border-neutral-700 rounded-lg bg-white dark:bg-neutral-900 shadow-lg py-1">
+                                {visibleColumns.map((col: string) => {
+                                  const isSelected = localConfig.deduplicateColumns.includes(col);
+                                  return (
+                                    <button
+                                      key={col}
+                                      type="button"
+                                      onClick={() => toggleDeduplicateColumn(col)}
+                                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+                                    >
+                                      <span className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 transition-colors ${
+                                        isSelected ? "bg-red-600 border-red-600" : "border-neutral-300 dark:border-neutral-600"
+                                      }`}>
+                                        {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                                      </span>
+                                      <span className={isSelected ? "text-neutral-900 dark:text-white font-medium" : "text-neutral-600 dark:text-neutral-300"}>
+                                        {col}
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                        </div>
+
+                        {localConfig.deduplicateColumns.length === 0 && (
+                          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2 italic">
+                            No columns selected — deduplication is disabled.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Column controls */}
+                    <div>
+                      <p className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-3">
+                        Column Settings
+                        {localConfig.dropColumns.length > 0 && (
+                          <span className="ml-2 text-red-500 normal-case">
+                            ({localConfig.dropColumns.length} column{localConfig.dropColumns.length !== 1 ? "s" : ""} marked for removal)
+                          </span>
+                        )}
+                      </p>
+                      <div className="border border-neutral-200 dark:border-neutral-700 rounded-xl overflow-hidden">
+                        <table className="min-w-full text-xs">
+                          <thead className="bg-neutral-50 dark:bg-neutral-800">
+                            <tr>
+                              <th className="px-4 py-2.5 text-left font-bold text-neutral-500 dark:text-neutral-400 w-8">Keep</th>
+                              <th className="px-4 py-2.5 text-left font-bold text-neutral-500 dark:text-neutral-400">Column Name</th>
+                              <th className="px-4 py-2.5 text-left font-bold text-neutral-500 dark:text-neutral-400">Sample Values</th>
+                              <th className="px-4 py-2.5 text-left font-bold text-neutral-500 dark:text-neutral-400 w-32">Data Type</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                            {columns.map((col: string) => {
+                              const isDropped = localConfig.dropColumns.includes(col);
+                              const samples = (currentPreview?.rows || [])
+                                .map((r: any) => r[col])
+                                .filter((v: any) => v !== null && v !== undefined && v !== "")
+                                .slice(0, 3);
+                              return (
+                                <tr
+                                  key={col}
+                                  className={`transition-colors ${isDropped ? "bg-red-50/50 dark:bg-red-950/30 opacity-60" : "hover:bg-neutral-50/50 dark:hover:bg-neutral-800"}`}
+                                >
+                                  <td className="px-4 py-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={!isDropped}
+                                      onChange={() => toggleDropColumn(col)}
+                                      className="w-3.5 h-3.5 text-red-600 rounded border-neutral-300 focus:ring-red-500"
+                                    />
+                                  </td>
+                                  <td className={`px-4 py-2 font-bold ${isDropped ? "line-through text-neutral-400 dark:text-neutral-500" : "text-neutral-900 dark:text-white"}`}>
+                                    {col}
+                                  </td>
+                                  <td className="px-4 py-2 text-neutral-500 dark:text-neutral-400 max-w-[200px] truncate">
+                                    {samples.length > 0 ? samples.map(String).join(", ") : <span className="italic text-neutral-300 dark:text-neutral-600">empty</span>}
+                                  </td>
+                                  <td className="px-4 py-2">
+                                    <select
+                                      value={localConfig.columnTypes[col] || "string"}
+                                      onChange={(e) => setColumnType(col, e.target.value as any)}
+                                      disabled={isDropped}
+                                      className="w-full text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-40 transition-shadow"
+                                    >
+                                      <option value="string">String</option>
+                                      <option value="number">Number</option>
+                                      <option value="date">Date</option>
+                                    </select>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Data preview */}

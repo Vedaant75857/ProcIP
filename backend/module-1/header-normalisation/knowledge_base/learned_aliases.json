@@ -11,12 +11,15 @@
     "CONTO_CO_GE_DESC"
   ],
   "GL Account": [
-    "WBE"
+    "WBE",
+    "NAME OF OFFSETTING ACCOUNT",
+    "WBS ELEMENT"
   ],
   "Invoice Line Description": [
     "WBE_DESC",
     "PROFIT_CENTER_DESC",
-    "CENTRO_DI_COSTO_DESC"
+    "CENTRO_DI_COSTO_DESC",
+    "DOCUMENT HEADER TEXT"
   ],
   "Total Amount paid in Reporting Currency": [
     "DIVISA DI GRUPPO",
@@ -24,15 +27,54 @@
   ],
   "Total Amount paid in Local Currency": [
     "IMPORTO_DIVISA_DOCUMENTO",
-    "IMPORTO_DIVISA_LOCALE"
+    "IMPORTO_DIVISA_LOCALE",
+    "AMOUNT IN LOC.CRCY 2",
+    "AMOUNT IN LOCAL CRCY"
   ],
   "Vendor Code": [
     "FORNITORE"
   ],
   "Business Unit": [
-    "PROFIT CENTER"
+    "PROFIT CENTER",
+    "BUSA"
   ],
   "Data Source System": [
     "_source_table"
+  ],
+  "Debit/ Credit Indicator": [
+    "TYPE"
+  ],
+  "Local Currency Code": [
+    "COCD",
+    "CRCY",
+    "AMOUNT IN DOC. CURR.",
+    "LCURR"
+  ],
+  "Fiscal Year": [
+    "YEAR/MONTH"
+  ],
+  "Goods Receipt Date": [
+    "PSTNG DATE",
+    "ENTRY DATE"
+  ],
+  "PO Document Date": [
+    "DOC. DATE"
+  ],
+  "Invoice Date": [
+    "DOCUMENTNO"
+  ],
+  "Transaction ID": [
+    "REFERENCE",
+    "REFERENCE KEY 3"
+  ],
+  "Cost Center Code": [
+    "COST CTR",
+    "HSN/SAC CODE"
+  ],
+  "Payment date": [
+    "CLEARING"
+  ],
+  "PO Manufacturer name": [
+    "USER NAME"
   ]
 }

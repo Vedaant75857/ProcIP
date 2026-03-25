@@ -29,9 +29,9 @@ const STAGE_PROMPTS: Record<number, string[]> = {
   2: ["Summarize the extracted tables", "Any tables I should remove?", "What do the columns look like?"],
   3: ["How should I clean this data?", "Which columns can I drop?", "Explain deduplication"],
   4: ["Why were these groups chosen?", "Should I merge any groups?", "What are unassigned tables?"],
-  5: ["What join keys were found?", "Explain the match rate", "Should I add extra keys?"],
-  6: ["Summarize the merge results", "Why are some fill rates low?", "How do I improve quality?"],
-  7: ["How was mapping done?", "What fields are unmapped?", "Explain low confidence"],
+  5: ["How should I clean this data?", "Which columns can I drop?", "Check for duplicates"],
+  6: ["Which table should be the base?", "Explain common columns", "What are good join keys?"],
+  7: ["Summarize the merge results", "Why are some fill rates low?", "How do I improve quality?"],
   8: ["Which views are ready?", "How do I unlock more views?", "Explain partial views"],
 };
 

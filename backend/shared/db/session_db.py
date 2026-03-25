@@ -47,6 +47,7 @@ def get_session_db(session_id: str) -> sqlite3.Connection:
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA temp_store = MEMORY")
         conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA cache_size = -64000")
 
         conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         conn.execute("""CREATE TABLE IF NOT EXISTS table_registry (

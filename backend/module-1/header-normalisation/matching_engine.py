@@ -111,6 +111,10 @@ _ALIAS_NORMS: list[tuple[str, str]] = [
     if an
 ]
 
+_ALIAS_NORMS_BY_FIELD: dict[str, list[str]] = {}
+for _an, _fld in _ALIAS_NORMS:
+    _ALIAS_NORMS_BY_FIELD.setdefault(_fld, []).append(_an)
+
 # ---------------------------------------------------------------------------
 # Sample-value pattern detectors
 # ---------------------------------------------------------------------------
@@ -165,9 +169,7 @@ def _fuzzy_score(src_norm: str, field: str) -> float:
         jacc = 0.0
 
     alias_best = 0.0
-    for a_norm, f in _ALIAS_NORMS:
-        if f != field:
-            continue
+    for a_norm in _ALIAS_NORMS_BY_FIELD.get(field, ()):
         s = _partial(src_norm, a_norm)
         if s > alias_best:
             alias_best = s
@@ -257,17 +259,16 @@ def map_single_header(
         if hint:
             return _hit(hint, "T6_SAMPLE", 0.82)
 
-    # -- T7: Smart fuzzy scoring --
-    scores = [(f, _fuzzy_score(norm, f)) for f in STD_FIELD_NAMES]
+    # -- T7: Smart fuzzy scoring (dict-based for O(1) updates) --
+    score_map = {f: _fuzzy_score(norm, f) for f in STD_FIELD_NAMES}
     for alt in {split, expanded, expanded_split} - {"", norm}:
         if alt:
             for f in STD_FIELD_NAMES:
                 s = _fuzzy_score(alt, f)
-                existing = next((sc for fn, sc in scores if fn == f), 0)
-                if s > existing:
-                    scores = [(fn, s if fn == f else sc) for fn, sc in scores]
+                if s > score_map[f]:
+                    score_map[f] = s
 
-    scores.sort(key=lambda x: x[1], reverse=True)
+    scores = sorted(score_map.items(), key=lambda x: x[1], reverse=True)
     best_field, best_score = scores[0]
     top_scores = [(f, round(s, 4)) for f, s in scores[:10]]
 

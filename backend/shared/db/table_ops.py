@@ -149,9 +149,10 @@ def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
-def drop_table(conn: sqlite3.Connection, table_name: str) -> None:
+def drop_table(conn: sqlite3.Connection, table_name: str, *, commit: bool = True) -> None:
     conn.execute(f"DROP TABLE IF EXISTS {quote_id(table_name)}")
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def table_row_count(conn: sqlite3.Connection, table_name: str) -> int:

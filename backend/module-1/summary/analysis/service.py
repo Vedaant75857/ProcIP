@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import sqlite3
@@ -38,35 +39,33 @@ def _enrich_column_stats(
     table_name: str,
     columns: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Shared `column_stats` plus per-column numeric_ratio from SQL."""
+    """Shared column_stats plus numeric_ratio — single-pass batched query."""
     if not table_exists(conn, table_name):
         return []
     all_cols = read_table_columns(conn, table_name)
-    if columns:
-        allow = set(all_cols)
-        cols = [c for c in columns if c in allow]
-    else:
-        cols = all_cols
+    cols = [c for c in columns if c in set(all_cols)] if columns else all_cols
     if not cols:
         return []
     tbl = quote_id(table_name)
     basic = column_stats(conn, table_name, cols)
-    out: list[dict[str, Any]] = []
-    for row in basic:
-        col = row["column_name"]  # sqlite3.Row
+
+    # Single batched query for all numeric_ratios
+    ratio_parts: list[str] = []
+    for col in cols:
         qc = quote_id(col)
         num_pred = _numeric_predicate(qc)
-        r2 = conn.execute(
-            f"""SELECT
-                CAST(COUNT(CASE WHEN {num_pred} AND {qc} IS NOT NULL
-                    AND TRIM(CAST({qc} AS TEXT)) != '' THEN 1 END) AS REAL)
-                / MAX(COUNT(CASE WHEN {qc} IS NOT NULL
-                    AND TRIM(CAST({qc} AS TEXT)) != '' THEN 1 END), 1) AS numeric_ratio
-            FROM {tbl}"""
-        ).fetchone()
-        numeric_ratio = float(r2["numeric_ratio"] or 0) if r2 else 0.0
-        base = {k: row[k] for k in row.keys()}
-        out.append({**base, "numeric_ratio": numeric_ratio})
+        nn = f"{qc} IS NOT NULL AND TRIM(CAST({qc} AS TEXT)) != ''"
+        ratio_parts.append(
+            f"CAST(COUNT(CASE WHEN {num_pred} AND {nn} THEN 1 END) AS REAL)"
+            f" / MAX(COUNT(CASE WHEN {nn} THEN 1 END), 1)"
+        )
+    row = conn.execute(f"SELECT {', '.join(ratio_parts)} FROM {tbl}").fetchone()
+
+    out: list[dict[str, Any]] = []
+    for i, b in enumerate(basic):
+        base = {k: b[k] for k in b.keys()}
+        base["numeric_ratio"] = float(row[i] or 0) if row else 0.0
+        out.append(base)
     return out
 
 
@@ -97,55 +96,46 @@ def run_analysis(
         "totalRows": total_rows,
         "columns": [
             {
-                "name": c["column_name"],
-                "non_null_count": c["non_null_count"],
-                "null_count": c["null_count"],
-                "fill_rate": c["fill_rate"],
-                "distinct_count": c["distinct_count"],
-                "numeric_ratio": c["numeric_ratio"],
+                "name": c["column_name"], "non_null_count": c["non_null_count"],
+                "null_count": c["null_count"], "fill_rate": c["fill_rate"],
+                "distinct_count": c["distinct_count"], "numeric_ratio": c["numeric_ratio"],
             }
             for c in column_stat_rows
         ],
         "sourceTables": [],
     }
 
-    try:
-        profiler = call_ai_json(DATA_PROFILER_PROMPT, profiler_payload, api_key=api_key)
-    except Exception:
-        profiler = {
-            "dataDescription": "Merged dataset",
-            "columnRoles": [
-                {"name": c["column_name"], "role": "auxiliary", "description": ""}
-                for c in column_stat_rows
-            ],
-            "domainKeywords": [],
-            "dataCharacteristics": "",
-        }
-
     auditor_payload = {
-        "table": "final_merged",
-        "totalRows": total_rows,
-        "columnStats": column_stat_rows,
-        "profilerOutput": profiler,
-        "crossTableConsistency": 1.0,
-        "duplicateRowEstimate": dup_est,
+        "table": "final_merged", "totalRows": total_rows,
+        "columnStats": column_stat_rows, "profilerOutput": {},
+        "crossTableConsistency": 1.0, "duplicateRowEstimate": dup_est,
     }
-    try:
-        auditor = call_ai_json(QUALITY_AUDITOR_PROMPT, auditor_payload, api_key=api_key)
-    except Exception:
-        avg_fill = (
-            sum(float(c.get("fill_rate") or 0.0) for c in column_stat_rows) / len(column_stat_rows)
-            if column_stat_rows
-            else 0.0
-        )
-        auditor = {
-            "overallScore": int(round(avg_fill * 100)),
-            "completeness": avg_fill,
-            "uniqueness": 0.0,
-            "consistency": 1.0,
-            "issues": [],
-            "recommendations": [],
-        }
+
+    def _run_profiler() -> dict[str, Any]:
+        try:
+            return call_ai_json(DATA_PROFILER_PROMPT, profiler_payload, api_key=api_key)
+        except Exception:
+            return {
+                "dataDescription": "Merged dataset",
+                "columnRoles": [{"name": c["column_name"], "role": "auxiliary", "description": ""} for c in column_stat_rows],
+                "domainKeywords": [], "dataCharacteristics": "",
+            }
+
+    def _run_auditor() -> dict[str, Any]:
+        try:
+            return call_ai_json(QUALITY_AUDITOR_PROMPT, auditor_payload, api_key=api_key)
+        except Exception:
+            avg_fill = sum(float(c.get("fill_rate") or 0.0) for c in column_stat_rows) / len(column_stat_rows) if column_stat_rows else 0.0
+            return {
+                "overallScore": int(round(avg_fill * 100)), "completeness": avg_fill,
+                "uniqueness": 0.0, "consistency": 1.0, "issues": [], "recommendations": [],
+            }
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_profiler = pool.submit(_run_profiler)
+        fut_auditor = pool.submit(_run_auditor)
+        profiler = fut_profiler.result()
+        auditor = fut_auditor.result()
 
     selected = [str(c) for c in (selected_columns or []) if isinstance(c, str) and c.strip()]
     if not selected:

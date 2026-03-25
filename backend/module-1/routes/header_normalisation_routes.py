@@ -32,8 +32,6 @@ get_table_preview = _hn_service.get_table_preview
 
 header_normalisation_bp = Blueprint("header_normalisation_bp", __name__)
 
-CONCURRENCY = 3
-
 
 # ---------------------------------------------------------------------------
 # Per-table header normalisation (new step between Inventory and Append)
@@ -124,12 +122,7 @@ def header_norm_group_preview():
                     continue
                 cols = read_table_columns(conn, sql)
                 rows = read_table(conn, sql, limit)
-                previews.append({
-                    "group_id": gid,
-                    "columns": cols,
-                    "rows": rows,
-                    "total_rows": table_row_count(conn, sql),
-                })
+                previews.append({"group_id": gid, "columns": cols, "rows": rows, "total_rows": table_row_count(conn, sql)})
         return jsonify({"previews": previews})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

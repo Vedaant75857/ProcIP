@@ -12,6 +12,7 @@ import importlib.util
 import os
 import sys
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -127,7 +128,7 @@ def run_header_norm(
             result = map_single_header(prof.source_name, prof.sample_values)
             engine_results.append(result)
 
-        # ----- Phase 2: AI paths (if api_key provided) -----
+        # ----- Phase 2: AI paths A + B run concurrently -----
         if api_key:
             data_rows = _get_data_rows(conn, sql_name, limit=50)
             profiles_for_ai = [p.to_dict() for p in profiles]
@@ -137,36 +138,35 @@ def run_header_norm(
                 top = er.get("top_scores", [])
                 det_hints_cache.append([{"std_field": f, "score": s} for f, s in top[:5]])
 
-            # Path A: map AI_NEEDED columns
             unmapped_items = [
                 {**er, "col_idx": idx}
                 for idx, er in enumerate(engine_results)
                 if er.get("action") == "AI_NEEDED"
             ]
-            if unmapped_items:
-                ai_results = ai_map_unmapped(
-                    unmapped_items,
-                    data_rows,
-                    api_key,
-                    profiles=profiles_for_ai,
-                    det_results_cache=det_hints_cache,
-                    std_field_payload=_STD_FIELD_PAYLOAD,
-                    system_prompt=SYSTEM_PROMPT_HEADER_NORM_COLUMN,
-                    batch_size=10,
-                )
-                ai_map = {r["raw"]: r for r in ai_results}
-                for er in engine_results:
-                    if er.get("action") == "AI_NEEDED" and er["raw"] in ai_map:
-                        updated = ai_map[er["raw"]]
-                        er["tier"] = updated.get("tier", er["tier"])
-                        er["mapped_to"] = updated.get("mapped_to", er["mapped_to"])
-                        er["confidence"] = updated.get("confidence", er["confidence"])
-                        er["action"] = updated.get("action", er["action"])
-                        if "reason" in updated:
-                            er["reason"] = updated["reason"]
 
-            # Path B: validate already-mapped columns
-            ai_validate_mapped(engine_results, data_rows, api_key)
+            with ThreadPoolExecutor(max_workers=2) as ai_pool:
+                fut_map = ai_pool.submit(
+                    ai_map_unmapped, unmapped_items, data_rows, api_key,
+                    profiles=profiles_for_ai, det_results_cache=det_hints_cache,
+                    std_field_payload=_STD_FIELD_PAYLOAD,
+                    system_prompt=SYSTEM_PROMPT_HEADER_NORM_COLUMN, batch_size=10,
+                ) if unmapped_items else None
+                fut_val = ai_pool.submit(ai_validate_mapped, engine_results, data_rows, api_key)
+
+                if fut_map is not None:
+                    ai_results = fut_map.result()
+                    ai_map = {r["raw"]: r for r in ai_results}
+                    for er in engine_results:
+                        if er.get("action") == "AI_NEEDED" and er["raw"] in ai_map:
+                            updated = ai_map[er["raw"]]
+                            er["tier"] = updated.get("tier", er["tier"])
+                            er["mapped_to"] = updated.get("mapped_to", er["mapped_to"])
+                            er["confidence"] = updated.get("confidence", er["confidence"])
+                            er["action"] = updated.get("action", er["action"])
+                            if "reason" in updated:
+                                er["reason"] = updated["reason"]
+
+                fut_val.result()
 
         # Mark remaining AI_NEEDED as KEEP (no API key or AI didn't resolve)
         for er in engine_results:

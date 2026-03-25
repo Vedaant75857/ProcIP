@@ -20,28 +20,28 @@ def column_stats(
         return []
 
     tbl = quote_id(table_name)
-    results: list[dict[str, Any]] = []
 
+    # Single-pass: one table scan computes stats for ALL columns at once.
+    parts: list[str] = []
     for col in cols:
         qc = quote_id(col)
-        row = conn.execute(
-            f"""SELECT
-                COUNT(*) AS total,
-                COUNT(CASE WHEN {qc} IS NOT NULL AND TRIM({qc}) != '' THEN 1 END) AS non_null,
-                COUNT(DISTINCT CASE WHEN {qc} IS NOT NULL AND TRIM({qc}) != '' THEN {qc} END) AS distinct_count
-            FROM {tbl}"""
-        ).fetchone()
-        total = row["total"]
-        non_null = row["non_null"]
-        results.append(
-            {
-                "column_name": col,
-                "null_count": total - non_null,
-                "non_null_count": non_null,
-                "fill_rate": non_null / total if total > 0 else 0,
-                "distinct_count": row["distinct_count"],
-            }
-        )
+        parts.append(f"COUNT(CASE WHEN {qc} IS NOT NULL AND TRIM({qc}) != '' THEN 1 END)")
+        parts.append(f"COUNT(DISTINCT CASE WHEN {qc} IS NOT NULL AND TRIM({qc}) != '' THEN {qc} END)")
+
+    sql = f"SELECT COUNT(*) AS total, {', '.join(parts)} FROM {tbl}"
+    row = conn.execute(sql).fetchone()
+    total = row[0]
+    results: list[dict[str, Any]] = []
+    for i, col in enumerate(cols):
+        non_null = row[1 + i * 2]
+        distinct_count = row[2 + i * 2]
+        results.append({
+            "column_name": col,
+            "null_count": total - non_null,
+            "non_null_count": non_null,
+            "fill_rate": non_null / total if total > 0 else 0,
+            "distinct_count": distinct_count,
+        })
     return results
 
 

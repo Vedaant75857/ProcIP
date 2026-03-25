@@ -95,6 +95,7 @@ def _apply_column_types(
 ) -> None:
     col_set = set(columns)
     tbl = quote_id(table)
+    dirty = False
     for col, target in column_types.items():
         if col not in col_set:
             continue
@@ -109,12 +110,15 @@ def _apply_column_types(
                   AND TRIM({qc}) GLOB '*[0-9]*'
                   AND TRIM({qc}) NOT GLOB '*[^0-9.eE+-]*'"""
             )
+            dirty = True
         elif target == "date":
             conn.execute(
                 f"""UPDATE {tbl}
                 SET {qc} = date(TRIM({qc}))
                 WHERE date(TRIM({qc})) IS NOT NULL"""
             )
+            dirty = True
+    if dirty:
         conn.commit()
 
 
@@ -202,8 +206,8 @@ def clean_table_sql(
     work = _work_name(table_key)
     shadow = _shadow_name(table_key)
 
-    drop_table(conn, work)
-    drop_table(conn, shadow)
+    drop_table(conn, work, commit=False)
+    drop_table(conn, shadow, commit=False)
     conn.execute(f"CREATE TABLE {quote_id(work)} AS SELECT * FROM {quote_id(raw_sql)}")
     conn.commit()
 
@@ -289,8 +293,8 @@ def clean_group_sql(
     work = _work_name(group_id)
     shadow = _shadow_name(group_id)
 
-    drop_table(conn, work)
-    drop_table(conn, shadow)
+    drop_table(conn, work, commit=False)
+    drop_table(conn, shadow, commit=False)
     conn.execute(f"CREATE TABLE {quote_id(work)} AS SELECT * FROM {quote_id(source_sql)}")
     conn.commit()
 

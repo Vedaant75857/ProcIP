@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import sqlite3
@@ -166,6 +167,122 @@ def _execute_slices(
     return results
 
 
+def _run_ai_pipeline_for_group(
+    db_data: dict[str, Any],
+    api_key: str,
+) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+    """AI-only pipeline for one group. No DB access — all data pre-fetched."""
+    gid = db_data["gid"]
+    tables = db_data["tables"]
+    col_stats = db_data["col_stats"]
+    dup_est = db_data["dup_est"]
+    cross_consistency = db_data["cross_consistency"]
+    total_rows = db_data["total_rows"]
+    total_cols = db_data["total_cols"]
+    sql_name = db_data["sql_name"]
+    col_set = db_data["col_set"]
+    stats_payload = _stats_for_prompt(col_stats)
+
+    profiler_payload = {
+        "groupId": gid, "tables": tables,
+        "reason": db_data.get("reason", ""), "totalRows": total_rows,
+        "columnStats": stats_payload,
+    }
+    try:
+        profiler = call_ai_json(DATA_PROFILER_PROMPT, profiler_payload, api_key=api_key)
+    except Exception:
+        profiler = {
+            "dataDescription": "",
+            "columnRoles": [{"name": c["name"], "role": "auxiliary", "description": ""} for c in stats_payload],
+            "domainKeywords": [], "dataCharacteristics": "",
+        }
+
+    auditor_payload = {
+        "groupId": gid, "columnStats": stats_payload,
+        "profilerOutput": profiler, "crossTableConsistency": cross_consistency,
+        "duplicateRowEstimate": dup_est, "totalRows": total_rows,
+    }
+    try:
+        quality = call_ai_json(QUALITY_AUDITOR_PROMPT, auditor_payload, api_key=api_key)
+    except Exception:
+        avg_fill = sum(c["fillRate"] for c in col_stats) / len(col_stats) if col_stats else 0.0
+        quality = {
+            "overallScore": int(round(avg_fill * 100)), "completeness": avg_fill,
+            "uniqueness": 0.0, "consistency": cross_consistency,
+            "issues": [], "recommendations": [],
+        }
+
+    strategist_payload = {
+        "groupId": gid, "columnStats": stats_payload,
+        "profilerOutput": profiler, "qualityOutput": quality, "relationships": [],
+    }
+    try:
+        strat = call_ai_json(ANALYTICS_STRATEGIST_PROMPT, strategist_payload, api_key=api_key)
+        strategist_slices = list(strat.get("suggestedSlices") or [])
+    except Exception:
+        strategist_slices = []
+
+    strategist_slices = [
+        s for s in strategist_slices
+        if s.get("dimension") in col_set
+        and (not s.get("measure") or s.get("measure") in col_set)
+    ][:5]
+
+    # Slice results need DB — stored pre-fetched col_set for validation only.
+    # Slices will be executed after AI pipeline returns to caller.
+    synth_payload = {
+        "groupId": gid, "totalRows": total_rows, "totalCols": total_cols,
+        "profilerOutput": profiler, "qualityOutput": quality,
+        "sliceResults": [], "columnStats": stats_payload,
+    }
+    try:
+        synthesized = call_ai_json(INSIGHT_SYNTHESIZER_PROMPT, synth_payload, api_key=api_key)
+    except Exception:
+        synthesized = {
+            "summary": profiler.get("dataDescription") or f"Group {gid}",
+            "topInsights": [],
+            "suggestedActions": quality.get("recommendations", [])[:4],
+        }
+
+    roles = profiler.get("columnRoles") or []
+    key_columns = [
+        {"name": r.get("name"), "role": r.get("role"), "description": r.get("description")}
+        for r in roles if r.get("role") != "auxiliary"
+    ][:15]
+
+    report = {
+        "groupId": gid,
+        "profile": {
+            "groupId": gid, "totalRows": total_rows, "totalCols": total_cols,
+            "tables": tables, "columnStats": col_stats,
+            "duplicateRowEstimate": dup_est, "crossTableConsistency": cross_consistency,
+        },
+        "quality": {
+            "groupId": gid, "overallScore": quality.get("overallScore"),
+            "completeness": quality.get("completeness"), "uniqueness": quality.get("uniqueness"),
+            "consistency": quality.get("consistency"),
+            "issues": quality.get("issues", []), "recommendations": quality.get("recommendations", []),
+        },
+        "analysisResults": [],
+        "insights": {
+            "summary": synthesized.get("summary"),
+            "dataDescription": profiler.get("dataDescription"),
+            "keyColumns": key_columns,
+            "qualityNotes": [
+                (f"[{i.get('column')}] " if i.get("column") else "") + str(i.get("description") or "")
+                for i in (quality.get("issues") or [])
+                if i.get("severity") in ("high", "medium")
+            ],
+            "topInsights": synthesized.get("topInsights", []),
+            "suggestedActions": synthesized.get("suggestedActions", []),
+        },
+        "profiler": profiler,
+        "_strategist_slices": strategist_slices,
+    }
+    profile_meta = {"groupId": gid, "totalRows": total_rows, "totalCols": total_cols, "tables": tables}
+    return report, profile_meta, str(gid), sql_name
+
+
 def run_insights(
     conn: sqlite3.Connection,
     session_id: str,
@@ -173,8 +290,9 @@ def run_insights(
     api_key: str,
 ) -> dict[str, Any]:
     """
-    Per-group: deep SQL column stats → profiler → quality auditor → strategist
-    → execute slice SQL → insight synthesizer. Then cross-group SQL + synthesizer.
+    Per-group: deep SQL column stats -> profiler -> quality auditor -> strategist
+    -> execute slice SQL -> insight synthesizer. AI calls for all groups run in PARALLEL.
+    Then cross-group SQL + synthesizer.
     """
     _ = session_id
     if groups is None:
@@ -182,10 +300,8 @@ def run_insights(
     if not groups:
         raise ValueError("No append groups provided or stored in session meta.")
 
-    group_reports: list[dict[str, Any]] = []
-    group_profiles: list[dict[str, Any]] = []
-    group_sql_names: dict[str, str] = {}
-
+    # Phase 1: gather all DB data sequentially (single conn, thread-safe)
+    group_db_data: list[dict[str, Any]] = []
     for group in groups:
         gid = group.get("group_id") or group.get("groupId")
         if not gid:
@@ -194,166 +310,44 @@ def run_insights(
         sql_name = resolve_group_table(conn, str(gid), group_tables=tables)
         if not sql_name or not table_exists(conn, sql_name):
             continue
-
-        group_sql_names[str(gid)] = sql_name
-        column_stats = compute_deep_column_stats(conn, sql_name)
+        col_stats = compute_deep_column_stats(conn, sql_name)
         dup_est = estimate_duplicate_rows(conn, sql_name)
         source_sqls = [
-            n
-            for n in (lookup_sql_name(conn, tk) for tk in tables)
+            n for n in (lookup_sql_name(conn, tk) for tk in tables)
             if n and table_exists(conn, n)
         ]
         cross_consistency = compute_cross_table_consistency(conn, source_sqls)
-
         total_rows = table_row_count(conn, sql_name)
-        total_cols = len(read_table_columns(conn, sql_name))
-        stats_payload = _stats_for_prompt(column_stats)
+        cols = read_table_columns(conn, sql_name)
+        group_db_data.append({
+            "gid": gid, "tables": tables, "reason": group.get("reason", ""),
+            "sql_name": sql_name, "col_stats": col_stats, "dup_est": dup_est,
+            "cross_consistency": cross_consistency, "total_rows": total_rows,
+            "total_cols": len(cols), "col_set": {c["name"] for c in col_stats},
+        })
 
-        profiler_payload = {
-            "groupId": gid,
-            "tables": tables,
-            "reason": group.get("reason", ""),
-            "totalRows": total_rows,
-            "columnStats": stats_payload,
+    # Phase 2: run AI pipelines in parallel (no DB access)
+    group_reports: list[dict[str, Any]] = []
+    group_profiles: list[dict[str, Any]] = []
+    group_sql_names: dict[str, str] = {}
+
+    with ThreadPoolExecutor(max_workers=min(6, max(len(group_db_data), 1))) as pool:
+        futures = {
+            pool.submit(_run_ai_pipeline_for_group, data, api_key): data
+            for data in group_db_data
         }
-        profiler: dict[str, Any] = {}
-        quality: dict[str, Any] = {}
-        strategist_slices: list[dict[str, Any]] = []
+        for fut in as_completed(futures):
+            report, profile_meta, gid, sql_name = fut.result()
+            group_reports.append(report)
+            group_profiles.append(profile_meta)
+            group_sql_names[gid] = sql_name
 
-        try:
-            profiler = call_ai_json(DATA_PROFILER_PROMPT, profiler_payload, api_key=api_key)
-        except Exception:
-            profiler = {
-                "dataDescription": "",
-                "columnRoles": [{"name": c["name"], "role": "auxiliary", "description": ""} for c in stats_payload],
-                "domainKeywords": [],
-                "dataCharacteristics": "",
-            }
-
-        auditor_payload = {
-            "groupId": gid,
-            "columnStats": stats_payload,
-            "profilerOutput": profiler,
-            "crossTableConsistency": cross_consistency,
-            "duplicateRowEstimate": dup_est,
-            "totalRows": total_rows,
-        }
-        try:
-            quality = call_ai_json(QUALITY_AUDITOR_PROMPT, auditor_payload, api_key=api_key)
-        except Exception:
-            avg_fill = (
-                sum(c["fillRate"] for c in column_stats) / len(column_stats)
-                if column_stats
-                else 0.0
-            )
-            quality = {
-                "overallScore": int(round(avg_fill * 100)),
-                "completeness": avg_fill,
-                "uniqueness": 0.0,
-                "consistency": cross_consistency,
-                "issues": [],
-                "recommendations": [],
-            }
-
-        strategist_payload = {
-            "groupId": gid,
-            "columnStats": stats_payload,
-            "profilerOutput": profiler,
-            "qualityOutput": quality,
-            "relationships": [],
-        }
-        try:
-            strat = call_ai_json(
-                ANALYTICS_STRATEGIST_PROMPT, strategist_payload, api_key=api_key
-            )
-            strategist_slices = list(strat.get("suggestedSlices") or [])
-        except Exception:
-            strategist_slices = []
-
-        col_names = {c["name"] for c in column_stats}
-        strategist_slices = [
-            s
-            for s in strategist_slices
-            if s.get("dimension") in col_names
-            and (not s.get("measure") or s.get("measure") in col_names)
-        ][:5]
-
-        slice_results = _execute_slices(conn, sql_name, strategist_slices)
-
-        synth_payload = {
-            "groupId": gid,
-            "totalRows": total_rows,
-            "totalCols": total_cols,
-            "profilerOutput": profiler,
-            "qualityOutput": quality,
-            "sliceResults": slice_results,
-            "columnStats": stats_payload,
-        }
-        try:
-            synthesized = call_ai_json(
-                INSIGHT_SYNTHESIZER_PROMPT, synth_payload, api_key=api_key
-            )
-        except Exception:
-            synthesized = {
-                "summary": profiler.get("dataDescription") or f"Group {gid}",
-                "topInsights": [],
-                "suggestedActions": quality.get("recommendations", [])[:4],
-            }
-
-        roles = profiler.get("columnRoles") or []
-        key_columns = [
-            {"name": r.get("name"), "role": r.get("role"), "description": r.get("description")}
-            for r in roles
-            if r.get("role") != "auxiliary"
-        ][:15]
-
-        group_reports.append(
-            {
-                "groupId": gid,
-                "profile": {
-                    "groupId": gid,
-                    "totalRows": total_rows,
-                    "totalCols": total_cols,
-                    "tables": tables,
-                    "columnStats": column_stats,
-                    "duplicateRowEstimate": dup_est,
-                    "crossTableConsistency": cross_consistency,
-                },
-                "quality": {
-                    "groupId": gid,
-                    "overallScore": quality.get("overallScore"),
-                    "completeness": quality.get("completeness"),
-                    "uniqueness": quality.get("uniqueness"),
-                    "consistency": quality.get("consistency"),
-                    "issues": quality.get("issues", []),
-                    "recommendations": quality.get("recommendations", []),
-                },
-                "analysisResults": slice_results,
-                "insights": {
-                    "summary": synthesized.get("summary"),
-                    "dataDescription": profiler.get("dataDescription"),
-                    "keyColumns": key_columns,
-                    "qualityNotes": [
-                        (f"[{i.get('column')}] " if i.get("column") else "")
-                        + str(i.get("description") or "")
-                        for i in (quality.get("issues") or [])
-                        if i.get("severity") in ("high", "medium")
-                    ],
-                    "topInsights": synthesized.get("topInsights", []),
-                    "suggestedActions": synthesized.get("suggestedActions", []),
-                },
-                "profiler": profiler,
-            }
-        )
-
-        group_profiles.append(
-            {
-                "groupId": gid,
-                "totalRows": total_rows,
-                "totalCols": total_cols,
-                "tables": tables,
-            }
-        )
+    # Phase 3: execute slice SQL (needs DB) and patch reports
+    for report in group_reports:
+        slices = report.pop("_strategist_slices", [])
+        sql_name = group_sql_names.get(report["groupId"])
+        if sql_name and slices:
+            report["analysisResults"] = _execute_slices(conn, sql_name, slices)
 
     cross_stats = analyze_cross_group_sql(conn, group_profiles, group_sql_names)
     narrative = ""
@@ -363,16 +357,10 @@ def run_insights(
         cross_input = {
             "groups": [
                 {
-                    "groupId": g["groupId"],
-                    "totalRows": g["totalRows"],
-                    "totalCols": g["totalCols"],
-                    "tables": g["tables"],
+                    "groupId": g["groupId"], "totalRows": g["totalRows"],
+                    "totalCols": g["totalCols"], "tables": g["tables"],
                     "description": next(
-                        (
-                            r["insights"].get("dataDescription", "")
-                            for r in group_reports
-                            if r["groupId"] == g["groupId"]
-                        ),
+                        (r["insights"].get("dataDescription", "") for r in group_reports if r["groupId"] == g["groupId"]),
                         "",
                     ),
                 }
@@ -382,9 +370,7 @@ def run_insights(
             "valueOverlap": cross_stats["valueOverlap"][:15],
         }
         try:
-            cg = call_ai_json(
-                CROSS_GROUP_SYNTHESIZER_PROMPT, cross_input, api_key=api_key
-            )
+            cg = call_ai_json(CROSS_GROUP_SYNTHESIZER_PROMPT, cross_input, api_key=api_key)
             narrative = str(cg.get("narrative", ""))
             merge_hints = list(cg.get("mergeHints") or [])
         except Exception:
@@ -394,11 +380,7 @@ def run_insights(
     return {
         "insights": insights_map,
         "groupReports": group_reports,
-        "crossGroupOverview": {
-            **cross_stats,
-            "narrative": narrative,
-            "mergeHints": merge_hints,
-        },
+        "crossGroupOverview": {**cross_stats, "narrative": narrative, "mergeHints": merge_hints},
     }
 
 

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { motion } from "motion/react";
-import { type LucideIcon, Info, CheckCircle2 } from "lucide-react";
+import { type LucideIcon, Info } from "lucide-react";
 
 /* ─── Motion Variants ─── */
 
@@ -125,8 +125,8 @@ const STEP_META: Record<number, { title: string; description: string }> = {
   3: { title: "Append Strategy", description: "Group related tables for stacking into unified datasets." },
   4: { title: "Header Normalisation", description: "Map each table's columns to the standard procurement schema." },
   5: { title: "Data Cleaning", description: "Clean and prepare individual tables before grouping." },
-  6: { title: "Merge", description: "Configure joins between your fact and dimension tables." },
-  7: { title: "Merge", description: "Review your final merged flat file and download the output." },
+  6: { title: "Merge", description: "Select join keys and merge your tables with guided column matching." },
+  7: { title: "Merge Results", description: "Review merge quality and download your unified dataset." },
   8: { title: "Analysis", description: "Explore patterns and insights in your consolidated data." },
   9: { title: "Procurement Mapping", description: "Map columns to standard procurement fields with AI assistance." },
   10: { title: "Procurement Views", description: "Analyze which procurement views your data supports." },
@@ -169,89 +169,6 @@ export function StepHero({ step, displayStep, totalSteps = 9, isAi }: StepHeroPr
             </span>
           )}
         </div>
-      </div>
-    </motion.div>
-  );
-}
-
-/* ─── DataStitchingHeader ─── */
-
-const STITCHING_SUBSTEPS = [
-  { step: 6, label: "Merge Configuration", description: "Configure joins" },
-  { step: 7, label: "Results", description: "Review & download" },
-];
-
-interface DataStitchingHeaderProps {
-  step: number;
-  maxStepReached: number;
-  setStep: (s: number) => void;
-}
-
-export function DataStitchingHeader({ step, maxStepReached, setStep }: DataStitchingHeaderProps) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={entranceEasing}
-      className="mb-8 rounded-3xl border border-red-200/60 dark:border-red-900/60 bg-gradient-to-r from-red-600 to-rose-600 p-7 text-white shadow-xl shadow-red-200/20 dark:shadow-red-900/20"
-    >
-      <div className="flex items-start justify-between gap-6 mb-6">
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-red-200">
-            Data pipeline assistant
-          </p>
-          <h2 className="mt-2 text-2xl font-semibold tracking-tight">Merge</h2>
-          <p className="mt-2 max-w-2xl text-sm text-red-50/90 leading-relaxed">
-            Configure joins and review your consolidated dataset.
-          </p>
-        </div>
-        <div className="rounded-2xl bg-white/10 px-4 py-3 backdrop-blur shrink-0">
-          <p className="text-[10px] uppercase tracking-wider text-red-200">Current step</p>
-          <p className="mt-1 text-lg font-semibold tabular-nums">
-            6 <span className="text-red-200/70 text-sm font-normal">of 9</span>
-          </p>
-          <span className="mt-1.5 inline-block text-[9px] font-bold uppercase tracking-wider bg-white/15 px-2 py-0.5 rounded-full">
-            AI-assisted
-          </span>
-        </div>
-      </div>
-
-      <div className="flex items-center">
-        {STITCHING_SUBSTEPS.map((sub, idx) => {
-          const isActive = step === sub.step;
-          const isCompleted = step > sub.step;
-          const isReachable = sub.step <= maxStepReached;
-          return (
-            <React.Fragment key={sub.step}>
-              {idx > 0 && (
-                <div className={`flex-1 h-px mx-1 transition-colors ${
-                  isCompleted || isActive ? "bg-white/50" : "bg-white/15"
-                }`} />
-              )}
-              <button
-                onClick={() => { if (isReachable) setStep(sub.step); }}
-                disabled={!isReachable}
-                className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl transition-all text-left shrink-0 ${
-                  isActive ? "bg-white/20 backdrop-blur shadow-sm" :
-                  isReachable ? "hover:bg-white/10 cursor-pointer" :
-                  "opacity-40 cursor-not-allowed"
-                }`}
-              >
-                <span className={`h-7 w-7 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${
-                  isActive ? "bg-white text-red-600" :
-                  isCompleted ? "bg-white/30 text-white" :
-                  "bg-white/10 text-white/60"
-                }`}>
-                  {isCompleted ? <CheckCircle2 className="w-3.5 h-3.5" /> : idx + 1}
-                </span>
-                <div className="min-w-0">
-                  <p className={`text-sm font-semibold whitespace-nowrap ${isActive ? "text-white" : "text-white/70"}`}>{sub.label}</p>
-                  <p className="text-[10px] text-white/50 whitespace-nowrap">{sub.description}</p>
-                </div>
-              </button>
-            </React.Fragment>
-          );
-        })}
       </div>
     </motion.div>
   );

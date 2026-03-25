@@ -1,228 +1,294 @@
-"""Merge API — setup, execute, match rate, CSV download, compatibility, normalize export."""
+"""Guided Merge API — recommend base, common columns, simulate, execute, validate, finalize, download."""
 
 from __future__ import annotations
 
-import os
+import csv
+import io
+from typing import Any
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
-from merging.merge_executor import build_group_preview, generate_csv_stream
-from merging.service import (
-    compute_match_rate_for_keys,
-    export_to_normalize,
-    run_merge_compatibility,
-    run_merge_compatibility_main_to_dims,
-)
-from routes.summary_routes import execute_operation_kernel
-
 from shared.db import (
-    column_stats,
     get_session_db,
     lookup_sql_name,
     read_table,
+    read_table_columns,
     table_exists,
     table_row_count,
+    quote_id,
+)
+
+from merging.guided_merge_service import (
+    classify_all_columns,
+    classify_columns,
+    execute_merge,
+    finalize_merge,
+    find_common_columns,
+    generate_validation_report,
+    recommend_base_file,
+    simulate_join,
+    skip_merge,
 )
 
 merging_bp = Blueprint("merging_bp", __name__)
 
-_INLINE_CSV_MAX_BYTES = int(os.getenv("MERGE_INLINE_CSV_MAX_BYTES", str(20 * 1024 * 1024)))
 
-
-def _build_inline_csv(conn, table_name: str) -> tuple[str | None, bool]:
-    total = 0
-    chunks: list[str] = []
-    for chunk in generate_csv_stream(conn, table_name):
-        b = len(chunk.encode("utf-8"))
-        if total + b > _INLINE_CSV_MAX_BYTES:
-            return None, True
-        chunks.append(chunk)
-        total += b
-    return "".join(chunks), False
-
-
-@merging_bp.route("/merge-setup", methods=["POST"])
-def merge_setup_route():
+@merging_bp.route("/merge/recommend-base", methods=["POST"])
+def recommend_base():
     try:
-        body = request.get_json(force=True) or {}
-        payload, status = execute_operation_kernel(
-            session_id=body.get("sessionId"),
-            operation="merge_setup",
-            api_key=body.get("apiKey"),
-            input_data={
-                "mainGroupId": body.get("mainGroupId"),
-                "dimensionGroupIds": body.get("dimensionGroupIds"),
-            },
-            options={"mode": "pipeline", "autoPrepare": True, "persist": True},
-            request_id=request.headers.get("X-Request-Id"),
-        )
-        if status != 200:
-            return jsonify({"error": payload.get("error"), "missing_requirements": payload.get("missing_requirements")}), status
-        return jsonify(payload.get("result") or {})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-
-
-@merging_bp.route("/merge-execute", methods=["POST"])
-def merge_execute_route():
-    try:
-        body = request.get_json(force=True) or {}
-        payload, status = execute_operation_kernel(
-            session_id=body.get("sessionId"),
-            operation="merge_execute",
-            api_key=body.get("apiKey"),
-            input_data={
-                "mainGroupId": body.get("mainGroupId"),
-                "mergePlan": body.get("mergePlan"),
-                "mergeKeys": body.get("mergeKeys"),
-                "dimColumnsToAdd": body.get("dimColumnsToAdd"),
-            },
-            options={"mode": "pipeline", "autoPrepare": True, "persist": True},
-            request_id=request.headers.get("X-Request-Id"),
-        )
-        if status != 200:
-            return jsonify({"error": payload.get("error"), "missing_requirements": payload.get("missing_requirements")}), status
-
-        result = payload.get("result") or {}
-        session_id = payload.get("sessionId")
-        conn = get_session_db(str(session_id))
-        final_table = str(result.get("final_table") or "final_merged")
-        final_shape = result.get("final_shape") or {}
-        main_gid = body.get("mainGroupId") or (payload.get("statePatch") or {}).get("mainGroupId")
-        fact_sql = lookup_sql_name(conn, str(main_gid)) if main_gid else None
-        fact_rows_before = table_row_count(conn, fact_sql) if fact_sql else int(final_shape.get("rows") or 0)
-        final_column_stats = []
-        for row in column_stats(conn, final_table):
-            final_column_stats.append({**row, "source": "fact"})
-
-        report = {
-            "merge_exec": result.get("merge_exec", []),
-            "final_shape": final_shape,
-            "fact_rows_before_merge": fact_rows_before,
-            "final_column_stats": final_column_stats,
-        }
-        preview = read_table(conn, final_table, 50)
-        inline_csv, csv_truncated = _build_inline_csv(conn, final_table)
-
-        payload = {
-            **result,
-            "report": report,
-            "preview": preview,
-            "csv": inline_csv,
-            "csvTruncated": csv_truncated,
-        }
-        return jsonify(payload)
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-
-
-@merging_bp.route("/merge-match-rate", methods=["POST"])
-def merge_match_rate_route():
-    try:
-        body = request.get_json(force=True) or {}
-        session_id = body.get("sessionId")
-        main_gid = body.get("mainGroupId")
-        dim_gid = body.get("dimensionGroupId")
-        fact_keys = body.get("factKeys")
-        dim_keys = body.get("dimKeys")
-        if not session_id or not main_gid or not dim_gid:
-            return jsonify({"error": "Missing sessionId, mainGroupId, or dimensionGroupId."}), 400
-        if not fact_keys or not dim_keys or len(fact_keys) != len(dim_keys):
-            return jsonify({"error": "factKeys and dimKeys must be non-empty and equal length."}), 400
-        if any(not k for k in fact_keys) or any(not k for k in dim_keys):
-            return jsonify({"error": "All keys must be non-empty."}), 400
-        conn = get_session_db(session_id)
-        fact_sql = lookup_sql_name(conn, main_gid)
-        dim_sql = lookup_sql_name(conn, dim_gid)
-        if not fact_sql or not dim_sql:
-            return jsonify({"error": "Invalid group ID(s)."}), 400
-        out = compute_match_rate_for_keys(conn, fact_sql, dim_sql, list(fact_keys), list(dim_keys))
-        return jsonify(out)
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-
-
-@merging_bp.route("/download-csv", methods=["GET"])
-def download_csv_route():
-    try:
-        session_id = request.args.get("sessionId")
-        if not session_id:
-            return jsonify({"error": "sessionId query parameter is required."}), 400
-        conn = get_session_db(session_id)
-        if not table_exists(conn, "final_merged"):
-            return jsonify({"error": "No merged data found."}), 404
-
-        headers = {
-            "Content-Type": "text/csv; charset=utf-8",
-            "Content-Disposition": 'attachment; filename="final_flat.csv"',
-        }
-        return Response(
-            stream_with_context(generate_csv_stream(conn, "final_merged")),
-            headers=headers,
-        )
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-
-
-@merging_bp.route("/merge-compatibility", methods=["POST"])
-def merge_compatibility_route():
-    try:
-        body = request.get_json(force=True) or {}
+        body = request.get_json(force=True, silent=True) or {}
         session_id = body.get("sessionId")
         api_key = body.get("apiKey")
         if not session_id:
-            return jsonify({"error": "sessionId is required."}), 400
+            return jsonify({"error": "Missing sessionId"}), 400
         conn = get_session_db(session_id)
-
-        groups = body.get("groups")
-        main_gid = body.get("mainGroupId")
-        dim_gids = body.get("dimensionGroupIds")
-
-        if groups and len(groups) >= 2:
-            result = run_merge_compatibility(conn, session_id, list(groups), api_key)
-        elif main_gid and dim_gids:
-            result = run_merge_compatibility_main_to_dims(
-                conn, session_id, str(main_gid), list(dim_gids), api_key
-            )
-        else:
-            return jsonify({
-                "error": "Provide either groups (2+) or mainGroupId with dimensionGroupIds.",
-            }), 400
-
-        if result.get("error"):
-            return jsonify(result), 400
+        result = recommend_base_file(conn, session_id, api_key)
         return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/common-columns", methods=["POST"])
+def common_columns():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        base_group_id = body.get("baseGroupId")
+        source_group_id = body.get("sourceGroupId")
+        api_key = body.get("apiKey")
+        include_preview = body.get("includePreview", False)
+        if not session_id or not base_group_id or not source_group_id:
+            return jsonify({"error": "Missing sessionId, baseGroupId, or sourceGroupId"}), 400
+
+        conn = get_session_db(session_id)
+        base_sql = lookup_sql_name(conn, base_group_id)
+        source_sql = lookup_sql_name(conn, source_group_id)
+        if not base_sql or not source_sql:
+            return jsonify({"error": "Invalid group ID(s)"}), 400
+
+        # Column lists + instant classification (no DB, runs in <1ms)
+        base_cols = read_table_columns(conn, base_sql)
+        source_cols = read_table_columns(conn, source_sql)
+        base_col_classes = classify_all_columns(base_cols)
+        source_col_classes = classify_all_columns(source_cols)
+
+        common = find_common_columns(conn, base_sql, source_sql)
+        classified = classify_columns(conn, session_id, api_key, common, base_sql_name=base_sql)
+
+        result: dict[str, Any] = {
+            "common_columns": classified,
+            "base_columns": base_cols,
+            "source_columns": source_cols,
+            "base_column_classes": base_col_classes,
+            "source_column_classes": source_col_classes,
+            "base_group_id": base_group_id,
+            "source_group_id": source_group_id,
+        }
+        if include_preview:
+            base_rows = read_table(conn, base_sql, 50)
+            source_rows = read_table(conn, source_sql, 50)
+            result["base_preview"] = {"columns": base_cols, "rows": base_rows, "total_rows": table_row_count(conn, base_sql)}
+            result["source_preview"] = {"columns": source_cols, "rows": source_rows, "total_rows": table_row_count(conn, source_sql)}
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/simulate", methods=["POST"])
+def simulate():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        base_group_id = body.get("baseGroupId")
+        source_group_id = body.get("sourceGroupId")
+        key_pairs = body.get("keyPairs", [])
+        if not session_id or not base_group_id or not source_group_id:
+            return jsonify({"error": "Missing required fields"}), 400
+        if not key_pairs:
+            return jsonify({"error": "At least one key pair required"}), 400
+
+        conn = get_session_db(session_id)
+        base_sql = lookup_sql_name(conn, base_group_id)
+        source_sql = lookup_sql_name(conn, source_group_id)
+        if not base_sql or not source_sql:
+            return jsonify({"error": "Invalid group ID(s)"}), 400
+
+        result = simulate_join(conn, base_sql, source_sql, key_pairs)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/execute", methods=["POST"])
+def execute():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        base_group_id = body.get("baseGroupId")
+        source_group_id = body.get("sourceGroupId")
+        key_pairs = body.get("keyPairs", [])
+        pull_columns = body.get("pullColumns", [])
+        if not session_id or not base_group_id or not source_group_id:
+            return jsonify({"error": "Missing required fields"}), 400
+
+        conn = get_session_db(session_id)
+        base_sql = lookup_sql_name(conn, base_group_id)
+        source_sql = lookup_sql_name(conn, source_group_id)
+        if not base_sql or not source_sql:
+            return jsonify({"error": "Invalid group ID(s)"}), 400
+
+        merge_log = execute_merge(
+            conn, session_id, base_sql, source_sql, key_pairs, pull_columns, source_group_id
+        )
+        report = generate_validation_report(
+            conn, base_sql, source_sql, merge_log["result_table"], merge_log
+        )
+
+        return jsonify({
+            "merge_log": merge_log,
+            "validation_report": report,
+        })
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/finalize", methods=["POST"])
+def finalize():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        approved_merges = body.get("approvedMerges", [])
+        if not session_id:
+            return jsonify({"error": "Missing sessionId"}), 400
+        if not approved_merges:
+            return jsonify({"error": "No approved merges provided"}), 400
+
+        conn = get_session_db(session_id)
+        result = finalize_merge(conn, session_id, approved_merges)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/skip", methods=["POST"])
+def skip():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        base_group_id = body.get("baseGroupId")
+        if not session_id or not base_group_id:
+            return jsonify({"error": "Missing sessionId or baseGroupId"}), 400
+        conn = get_session_db(session_id)
+        result = skip_merge(conn, session_id, base_group_id)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/download-csv", methods=["GET"])
+def download_csv():
+    try:
+        session_id = request.args.get("sessionId")
+        if not session_id:
+            return jsonify({"error": "sessionId query parameter is required"}), 400
+        conn = get_session_db(session_id)
+        if not table_exists(conn, "final_merged"):
+            return jsonify({"error": "No merged data found"}), 404
+
+        def _generate():
+            columns = read_table_columns(conn, "final_merged")
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(columns)
+            yield buf.getvalue()
+            buf.seek(0)
+            buf.truncate()
+
+            cursor = conn.execute(f"SELECT * FROM {quote_id('final_merged')}")
+            while True:
+                rows = cursor.fetchmany(2000)
+                if not rows:
+                    break
+                for row in rows:
+                    writer.writerow([row[c] for c in columns])
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate()
+
+        return Response(
+            stream_with_context(_generate()),
+            headers={
+                "Content-Type": "text/csv; charset=utf-8",
+                "Content-Disposition": 'attachment; filename="final_merged.csv"',
+            },
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/table-preview", methods=["POST"])
+def table_preview():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        group_id = body.get("groupId")
+        limit = min(int(body.get("limit", 50)), 200)
+        if not session_id or not group_id:
+            return jsonify({"error": "Missing sessionId or groupId"}), 400
+
+        conn = get_session_db(session_id)
+        sql_name = lookup_sql_name(conn, group_id)
+        if not sql_name or not table_exists(conn, sql_name):
+            return jsonify({"error": f"Table not found for group {group_id}"}), 404
+
+        columns = read_table_columns(conn, sql_name)
+        rows = read_table(conn, sql_name, limit)
+        total = table_row_count(conn, sql_name)
+
+        return jsonify({
+            "group_id": group_id,
+            "columns": columns,
+            "rows": rows,
+            "total_rows": total,
+        })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
 
 @merging_bp.route("/group-preview", methods=["POST"])
 def group_preview_route():
+    """Backward-compatible group preview endpoint."""
     try:
-        body = request.get_json(force=True) or {}
+        body = request.get_json(force=True, silent=True) or {}
         session_id = body.get("sessionId")
-        group_ids = body.get("groupIds") or body.get("group_ids")
+        group_ids = body.get("groupIds") or body.get("group_ids") or []
         if not session_id or not group_ids:
-            return jsonify({"error": "sessionId and groupIds are required."}), 400
+            return jsonify({"error": "sessionId and groupIds are required"}), 400
         conn = get_session_db(session_id)
-        previews = build_group_preview(conn, [str(g) for g in group_ids])
-        return jsonify({"previews": previews})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
-
-
-@merging_bp.route("/export-to-normalize", methods=["POST"])
-def export_to_normalize_route():
-    try:
-        body = request.get_json(force=True) or {}
-        session_id = body.get("sessionId")
-        if not session_id:
-            return jsonify({"error": "sessionId is required."}), 400
-        table_name = body.get("tableName") or "final_merged"
-        conn = get_session_db(session_id)
-        result = export_to_normalize(conn, session_id, table_name)
-        if not result.get("success"):
-            return jsonify(result), 404
+        result: dict[str, Any] = {}
+        for gid in group_ids:
+            gid = str(gid)
+            sql_name = lookup_sql_name(conn, gid)
+            if not sql_name:
+                sql_name = gid if table_exists(conn, gid) else None
+            if not sql_name or not table_exists(conn, sql_name):
+                continue
+            columns = read_table_columns(conn, sql_name)
+            rows = read_table(conn, sql_name, 50)
+            total = table_row_count(conn, sql_name)
+            result[gid] = {"columns": columns, "rows": rows, "total_rows": total}
         return jsonify(result)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

@@ -1,767 +1,1070 @@
-import React, { useState, useCallback, useRef, useEffect } from "react";
-import { Loader2, ChevronRight, ChevronDown, Database, Layers, Key, Columns, ArrowRight, AlertCircle, AlertTriangle, Plus, X, MessageSquare, ShieldAlert, Sparkles, Info, Search, CheckCircle2, Eye } from "lucide-react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
+import ReactDOM from "react-dom";
 import { motion } from "motion/react";
+import {
+  ArrowRight,
+  Check,
+  Key,
+  Link2,
+  Loader2,
+  Maximize2,
+  Minimize2,
+  RotateCcw,
+  SkipForward,
+  Sparkles,
+  X,
+  AlertTriangle,
+  Download,
+} from "lucide-react";
+import { SurfaceCard, PrimaryButton, SecondaryButton, FillBar, itemVariants } from "./ui";
+import type { LogEntry } from "./StatusLog";
 import MergeReport from "./MergeReport";
-import TablePreviewOverlay from "./TablePreviewOverlay";
-import { PrimaryButton, SecondaryButton, EmptyState, SkeletonBlock } from "./ui";
 
-interface MergingProps {
+export interface MergingProps {
   sessionId: string;
+  apiKey: string;
   step: number;
+  setStep: (s: number) => void;
   groupSchema: any[];
-  groupNameMap?: Record<string, string>;
-  mainGroupId: string;
-  setMainGroupId: (id: string) => void;
-  dimensionGroupIds: string[];
-  setDimensionGroupIds: (ids: string[]) => void;
-  mergeKeys: any[];
-  setMergeKeys: (keys: any[] | ((prev: any[]) => any[])) => void;
-  dimColumnsToAdd: Record<string, string[]>;
-  setDimColumnsToAdd: (cols: Record<string, string[]>) => void;
-  mergeResult: any;
+  groupNameMap: Record<string, string>;
   loading: boolean;
-  handleMergeSetup: () => void;
-  handleMergeExecute: () => void;
-  handleSkipMerge: () => void;
-  downloadCsv: () => void;
-  downloadReport: () => void;
+  setLoading: (v: boolean) => void;
+  setAiLoading: (v: boolean) => void;
+  setLoadingMessage: (v: string) => void;
+  setError: (v: string | null) => void;
+  addLog: (stepName: string, type: LogEntry["type"], message: string) => void;
+  mergeBaseGroupId: string;
+  setMergeBaseGroupId: (v: string) => void;
+  mergeBaseRecommendation: any;
+  setMergeBaseRecommendation: (v: any) => void;
+  mergeSourceGroupIds: string[];
+  setMergeSourceGroupIds: (v: string[]) => void;
+  mergeCurrentSourceIdx: number;
+  setMergeCurrentSourceIdx: (v: number) => void;
+  mergeCommonColumns: any[];
+  setMergeCommonColumns: (v: any[]) => void;
+  mergeSelectedKeys: Array<{ base_col: string; source_col: string }>;
+  setMergeSelectedKeys: (v: Array<{ base_col: string; source_col: string }>) => void;
+  mergePullColumns: string[];
+  setMergePullColumns: (v: string[]) => void;
+  mergeSimulation: any;
+  setMergeSimulation: (v: any) => void;
+  mergeValidationReport: any;
+  setMergeValidationReport: (v: any) => void;
+  mergeResult: any;
+  setMergeResult: (v: any) => void;
+  mergeApprovedSources: any[];
+  setMergeApprovedSources: (v: any[]) => void;
+  onProceedToAnalysis: () => void;
   handleGenerateProcurementMapping: () => void;
-  onProceedToAnalysis?: () => void;
-  onSendToNormalization?: () => void;
-  onSelectChatItem?: (item: { type: string; id: string; label: string }) => void;
-  mergeCompatibility?: any[] | null;
-  compatibilityLoading?: boolean;
-  handleMergeCompatibility?: () => void;
 }
 
+const COLOR_MAP: Record<string, string> = {
+  green: "bg-emerald-100 border-emerald-400 text-emerald-900 dark:bg-emerald-950/40 dark:border-emerald-600 dark:text-emerald-200",
+  orange: "bg-amber-100 border-amber-400 text-amber-900 dark:bg-amber-950/40 dark:border-amber-600 dark:text-amber-200",
+  red: "bg-red-100 border-red-400 text-red-900 dark:bg-red-950/40 dark:border-red-600 dark:text-red-200",
+  grey: "bg-neutral-100 border-neutral-300 text-neutral-700 dark:bg-neutral-800/60 dark:border-neutral-600 dark:text-neutral-300",
+};
 
-export default function Merging({
-  sessionId,
-  step,
-  groupSchema,
-  groupNameMap = {},
-  mainGroupId,
-  setMainGroupId,
-  dimensionGroupIds,
-  setDimensionGroupIds,
-  mergeKeys,
-  setMergeKeys,
-  dimColumnsToAdd,
-  setDimColumnsToAdd,
-  mergeResult,
-  loading,
-  handleMergeSetup,
-  handleMergeExecute,
-  handleSkipMerge,
-  downloadCsv,
-  downloadReport,
-  handleGenerateProcurementMapping,
-  onProceedToAnalysis,
-  onSendToNormalization,
-  onSelectChatItem,
-  mergeCompatibility,
-  compatibilityLoading = false,
-  handleMergeCompatibility,
-}: MergingProps) {
-  const gn = (id: string) => groupNameMap[id] || id;
-  const [previewTarget, setPreviewTarget] = useState<{
-    factGroupId: string;
-    dimGroupId: string;
-    factKey: string | null;
-    dimKey: string | null;
-    extraKeys?: Array<{ fact_key: string; dim_key: string }>;
-  } | null>(null);
+const BADGE_COLOR_MAP: Record<string, string> = {
+  green: "bg-emerald-500 text-white",
+  orange: "bg-amber-500 text-white",
+  red: "bg-red-500 text-white",
+  grey: "bg-neutral-400 text-white",
+};
 
-  const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+function getStatColor(metric: string, value: number): string {
+  if (metric === "match_rate") return value >= 80 ? "text-emerald-600" : value >= 50 ? "text-amber-600" : "text-red-600";
+  if (metric === "row_explosion_factor") return value <= 1.1 ? "text-emerald-600" : value <= 2 ? "text-amber-600" : "text-red-600";
+  if (metric === "estimated_null_rate") return value <= 20 ? "text-emerald-600" : value <= 50 ? "text-amber-600" : "text-red-600";
+  return "text-neutral-700 dark:text-neutral-300";
+}
 
-  const refreshMatchRate = useCallback((mkIndex: number, mk: any) => {
-    const dimGid = mk.dimension_group;
-    const factKeys = [mk.fact_key, ...(mk.extra_keys || []).map((ek: any) => ek.fact_key)].filter(Boolean);
-    const dimKeys = [mk.dim_key, ...(mk.extra_keys || []).map((ek: any) => ek.dim_key)].filter(Boolean);
+export default function Merging(props: MergingProps) {
+  const {
+    sessionId, apiKey, step, setStep,
+    groupSchema, groupNameMap, loading,
+    setLoading, setAiLoading, setLoadingMessage, setError, addLog,
+    mergeBaseGroupId, setMergeBaseGroupId,
+    mergeBaseRecommendation, setMergeBaseRecommendation,
+    mergeSourceGroupIds, setMergeSourceGroupIds,
+    mergeCurrentSourceIdx, setMergeCurrentSourceIdx,
+    mergeCommonColumns, setMergeCommonColumns,
+    mergeSelectedKeys, setMergeSelectedKeys,
+    mergePullColumns, setMergePullColumns,
+    mergeSimulation, setMergeSimulation,
+    mergeValidationReport, setMergeValidationReport,
+    mergeResult, setMergeResult,
+    mergeApprovedSources, setMergeApprovedSources,
+    onProceedToAnalysis, handleGenerateProcurementMapping,
+  } = props;
 
-    if (factKeys.length === 0 || dimKeys.length === 0 || factKeys.length !== dimKeys.length) return;
+  const [basePreview, setBasePreview] = useState<{ columns: string[]; rows: any[] } | null>(null);
+  const [sourcePreview, setSourcePreview] = useState<{ columns: string[]; rows: any[] } | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [executingMerge, setExecutingMerge] = useState(false);
+  const [allBaseColumns, setAllBaseColumns] = useState<string[]>([]);
+  const [allSourceColumns, setAllSourceColumns] = useState<string[]>([]);
+  const [baseColClasses, setBaseColClasses] = useState<Record<string, { category: string; eligibility: string; color: string }>>({});
+  const [sourceColClasses, setSourceColClasses] = useState<Record<string, { category: string; eligibility: string; color: string }>>({});
+  const [columnsLoading, setColumnsLoading] = useState(false);
+  const [pendingBaseCols, setPendingBaseCols] = useState<string[]>([]);
+  const simDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastBasePreviewId = useRef<string>("");
 
-    if (debounceTimers.current[dimGid]) clearTimeout(debounceTimers.current[dimGid]);
-    debounceTimers.current[dimGid] = setTimeout(async () => {
-      try {
-        const res = await fetch("/api/merge-match-rate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId, mainGroupId, dimensionGroupId: dimGid, factKeys, dimKeys }),
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        setMergeKeys((prev: any[]) =>
-          prev.map((k, idx) =>
-            idx === mkIndex ? { ...k, match_rate: data.match_rate, distinct_matches: data.distinct_matches } : k
-          )
-        );
-      } catch { /* silently ignore network errors */ }
-    }, 400);
-  }, [sessionId, mainGroupId, setMergeKeys]);
+  const currentSourceGroupId = mergeSourceGroupIds[mergeCurrentSourceIdx] || "";
+
+  // Build lookup for common columns
+  const commonByBase = new Map<string, any>();
+  const commonBySource = new Map<string, any>();
+  for (const cc of mergeCommonColumns) {
+    commonByBase.set(cc.base_col, cc);
+    commonBySource.set(cc.source_col, cc);
+  }
+
+  // --- Section A: Recommend Base ---
+
+  const fetchRecommendation = useCallback(async () => {
+    if (!sessionId || groupSchema.length === 0) return;
+    setAiLoading(true);
+    setLoadingMessage("AI is recommending the best base table...");
+    try {
+      const res = await fetch("/api/merge/recommend-base", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, apiKey }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to recommend base");
+      const data = await res.json();
+      setMergeBaseRecommendation(data);
+      if (data.recommended && !mergeBaseGroupId) {
+        setMergeBaseGroupId(data.recommended);
+        const others = groupSchema.map((g: any) => g.group_id).filter((id: string) => id !== data.recommended);
+        setMergeSourceGroupIds(others);
+      }
+      addLog("Merge", "success", `Recommended base: ${groupNameMap[data.recommended] || data.recommended}`);
+    } catch (err: any) {
+      addLog("Merge", "error", err.message);
+    } finally {
+      setAiLoading(false);
+    }
+  }, [sessionId, apiKey, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setAiLoading, setLoadingMessage, setMergeBaseGroupId, setMergeBaseRecommendation, setMergeSourceGroupIds]);
 
   useEffect(() => {
-    const timers = debounceTimers.current;
-    return () => {
-      for (const key of Object.keys(timers)) {
-        clearTimeout(timers[key]);
+    if (step === 6 && !mergeBaseRecommendation && groupSchema.length > 0) {
+      fetchRecommendation();
+    }
+  }, [step, mergeBaseRecommendation, groupSchema.length, fetchRecommendation]);
+
+  const handleBaseChange = useCallback((newBaseId: string) => {
+    setMergeBaseGroupId(newBaseId);
+    const others = groupSchema.map((g: any) => g.group_id).filter((id: string) => id !== newBaseId);
+    setMergeSourceGroupIds(others);
+    setMergeCurrentSourceIdx(0);
+    setMergeCommonColumns([]);
+    setMergeSelectedKeys([]);
+    setMergePullColumns([]);
+    setMergeSimulation(null);
+    setMergeValidationReport(null);
+    setBasePreview(null);
+    setSourcePreview(null);
+    setBaseColClasses({});
+    setSourceColClasses({});
+    setPendingBaseCols([]);
+  }, [groupSchema, setMergeBaseGroupId, setMergeSourceGroupIds, setMergeCurrentSourceIdx, setMergeCommonColumns, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport]);
+
+  const handleSourceChange = useCallback((newSourceId: string) => {
+    const idx = mergeSourceGroupIds.indexOf(newSourceId);
+    if (idx >= 0) {
+      setMergeCurrentSourceIdx(idx);
+    } else {
+      const allOthers = groupSchema.map((g: any) => g.group_id).filter((id: string) => id !== mergeBaseGroupId);
+      const newIdx = allOthers.indexOf(newSourceId);
+      setMergeSourceGroupIds(allOthers);
+      setMergeCurrentSourceIdx(newIdx >= 0 ? newIdx : 0);
+    }
+    // Keep base preview & base classes intact — only source changed
+    setMergeCommonColumns([]);
+    setMergeSelectedKeys([]);
+    setMergePullColumns([]);
+    setMergeSimulation(null);
+    setMergeValidationReport(null);
+    setSourcePreview(null);
+    setSourceColClasses({});
+    setPendingBaseCols([]);
+  }, [groupSchema, mergeBaseGroupId, mergeSourceGroupIds, setMergeCurrentSourceIdx, setMergeSourceGroupIds, setMergeCommonColumns, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport]);
+
+  // --- Section B: Fetch Common Columns + Preview ---
+
+  const fetchColumnsAndPreviews = useCallback(async () => {
+    if (!sessionId || !mergeBaseGroupId || !currentSourceGroupId) return;
+    setColumnsLoading(true);
+    setLoadingMessage("Analyzing columns & loading previews...");
+    try {
+      // Single round-trip: column analysis + previews in parallel on the backend
+      const res = await fetch("/api/merge/common-columns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          baseGroupId: mergeBaseGroupId,
+          sourceGroupId: currentSourceGroupId,
+          apiKey,
+          includePreview: true,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to analyze columns");
+      const data = await res.json();
+      setMergeCommonColumns(data.common_columns || []);
+      setAllBaseColumns(data.base_columns || []);
+      setAllSourceColumns(data.source_columns || []);
+      setBaseColClasses(data.base_column_classes || {});
+      setSourceColClasses(data.source_column_classes || {});
+      if (data.base_preview) {
+        setBasePreview({ columns: data.base_preview.columns, rows: data.base_preview.rows });
+        lastBasePreviewId.current = mergeBaseGroupId;
       }
-    };
-  }, []);
+      if (data.source_preview) {
+        setSourcePreview({ columns: data.source_preview.columns, rows: data.source_preview.rows });
+      }
+      addLog("Merge", "info", `Found ${(data.common_columns || []).length} common column(s)`);
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Merge", "error", err.message);
+    } finally {
+      setColumnsLoading(false);
+    }
+  }, [sessionId, mergeBaseGroupId, currentSourceGroupId, apiKey, addLog, setError, setLoadingMessage, setMergeCommonColumns]);
+
+  useEffect(() => {
+    if (mergeBaseGroupId && currentSourceGroupId && step === 6) {
+      setMergeSelectedKeys([]);
+      setMergePullColumns([]);
+      setMergeSimulation(null);
+      setMergeValidationReport(null);
+      setPendingBaseCols([]);
+      fetchColumnsAndPreviews();
+    }
+  }, [mergeBaseGroupId, currentSourceGroupId, step]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // --- Key Selection ---
+  // Base checkbox: toggles column in pendingBaseCols queue, or removes existing pair
+  // Source checkbox: pairs with the oldest pending base col (FIFO), or removes existing pair
+  // Supports composite keys — check multiple base cols then multiple source cols
+
+  const handleBaseKeyCheck = useCallback((col: string) => {
+    const existingPair = mergeSelectedKeys.find((k) => k.base_col === col);
+    if (existingPair) {
+      setMergeSelectedKeys((prev) => prev.filter((k) => k.base_col !== col));
+      return;
+    }
+    setPendingBaseCols((prev) =>
+      prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]
+    );
+  }, [mergeSelectedKeys, setMergeSelectedKeys]);
+
+  const handleSourceKeyCheck = useCallback((col: string) => {
+    const existingPair = mergeSelectedKeys.find((k) => k.source_col === col);
+    if (existingPair) {
+      setMergeSelectedKeys((prev) => prev.filter((k) => k.source_col !== col));
+      return;
+    }
+    if (pendingBaseCols.length > 0) {
+      const baseCol = pendingBaseCols[0];
+      setMergeSelectedKeys((prev) => [...prev, { base_col: baseCol, source_col: col }]);
+      setPendingBaseCols((prev) => prev.slice(1));
+    }
+  }, [pendingBaseCols, mergeSelectedKeys, setMergeSelectedKeys]);
+
+  const handleSourceHeaderClick = useCallback((col: string) => {
+    const isKey = mergeSelectedKeys.some((k) => k.source_col === col);
+    if (isKey) return;
+    setMergePullColumns((prev) =>
+      prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]
+    );
+  }, [mergeSelectedKeys, setMergePullColumns]);
+
+  const removeKeyPair = useCallback((baseCol: string, sourceCol: string) => {
+    setMergeSelectedKeys((prev) => prev.filter((k) => !(k.base_col === baseCol && k.source_col === sourceCol)));
+  }, [setMergeSelectedKeys]);
+
+  const removePullColumn = useCallback((col: string) => {
+    setMergePullColumns((prev) => prev.filter((c) => c !== col));
+  }, [setMergePullColumns]);
+
+  // --- Section C: Simulation (debounced) ---
+
+  const [simLoading, setSimLoading] = useState(false);
+  const [simError, setSimError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (simDebounceRef.current) clearTimeout(simDebounceRef.current);
+    if (mergeSelectedKeys.length === 0 || !mergeBaseGroupId || !currentSourceGroupId) {
+      setMergeSimulation(null);
+      setSimError(null);
+      return;
+    }
+    setSimLoading(true);
+    setSimError(null);
+    simDebounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/merge/simulate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId,
+            baseGroupId: mergeBaseGroupId,
+            sourceGroupId: currentSourceGroupId,
+            keyPairs: mergeSelectedKeys,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setMergeSimulation(data);
+          setSimError(null);
+        } else {
+          setSimError(data.error || "Simulation failed");
+          setMergeSimulation(null);
+        }
+      } catch (err: any) {
+        setSimError(err.message || "Simulation request failed");
+        setMergeSimulation(null);
+      } finally {
+        setSimLoading(false);
+      }
+    }, 500);
+    return () => { if (simDebounceRef.current) clearTimeout(simDebounceRef.current); };
+  }, [mergeSelectedKeys, sessionId, mergeBaseGroupId, currentSourceGroupId, setMergeSimulation]);
+
+  // --- Section D: Execute ---
+
+  const handleExecute = useCallback(async () => {
+    if (!sessionId || !mergeBaseGroupId || !currentSourceGroupId || mergeSelectedKeys.length === 0) return;
+    setExecutingMerge(true);
+    setError(null);
+    addLog("Merge", "info", `Executing merge for source: ${groupNameMap[currentSourceGroupId] || currentSourceGroupId}...`);
+    try {
+      const res = await fetch("/api/merge/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          baseGroupId: mergeBaseGroupId,
+          sourceGroupId: currentSourceGroupId,
+          keyPairs: mergeSelectedKeys,
+          pullColumns: mergePullColumns,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Merge execution failed");
+      const data = await res.json();
+      setMergeValidationReport(data.validation_report);
+      addLog("Merge", "success", `Merged: ${data.merge_log?.rows || 0} rows, ${data.merge_log?.columns_pulled?.length || 0} columns pulled`);
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Merge", "error", err.message);
+    } finally {
+      setExecutingMerge(false);
+    }
+  }, [sessionId, mergeBaseGroupId, currentSourceGroupId, mergeSelectedKeys, mergePullColumns, groupNameMap, addLog, setError, setMergeValidationReport]);
+
+  // --- Approve & Continue / Finalize ---
+
+  const handleApprove = useCallback(async () => {
+    try {
+      const newApproved = [
+        ...mergeApprovedSources,
+        {
+          base_group_id: mergeBaseGroupId,
+          source_group_id: currentSourceGroupId,
+          result_table: `_merge_step_${currentSourceGroupId}`,
+          key_pairs: mergeSelectedKeys,
+          pull_columns: mergePullColumns,
+          validation_report: mergeValidationReport,
+        },
+      ];
+      setMergeApprovedSources(newApproved);
+
+      const nextIdx = mergeCurrentSourceIdx + 1;
+      if (nextIdx < mergeSourceGroupIds.length) {
+        setMergeCurrentSourceIdx(nextIdx);
+        setMergeCommonColumns([]);
+        setMergeSelectedKeys([]);
+        setMergePullColumns([]);
+        setMergeSimulation(null);
+        setMergeValidationReport(null);
+        setSourcePreview(null);
+        setSourceColClasses({});
+        setPendingBaseCols([]);
+        addLog("Merge", "info", `Approved source ${mergeCurrentSourceIdx + 1}/${mergeSourceGroupIds.length}. Moving to next source.`);
+      } else {
+        setAiLoading(true);
+        setLoadingMessage("Finalizing merge — building final_merged table...");
+        try {
+          const payload = newApproved.map(({ validation_report: _vr, ...rest }) => rest);
+          const res = await fetch("/api/merge/finalize", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, approvedMerges: payload }),
+          });
+          if (!res.ok) throw new Error((await res.json()).error || "Finalization failed");
+          const data = await res.json();
+          setMergeResult(data);
+          addLog("Merge", "success", `Final merged table: ${data.rows} rows × ${data.cols} columns`);
+          setStep(7);
+        } finally {
+          setAiLoading(false);
+        }
+      }
+    } catch (err: any) {
+      setError(err.message || "Approve & finalize failed");
+      addLog("Merge", "error", err.message || "Approve & finalize failed");
+      setAiLoading(false);
+    }
+  }, [mergeApprovedSources, mergeBaseGroupId, currentSourceGroupId, mergeSelectedKeys, mergePullColumns, mergeValidationReport, mergeCurrentSourceIdx, mergeSourceGroupIds, sessionId, addLog, setError, setAiLoading, setLoadingMessage, setMergeApprovedSources, setMergeCurrentSourceIdx, setMergeCommonColumns, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport, setMergeResult, setStep]);
+
+  const handleRedo = useCallback(() => {
+    setMergeSelectedKeys([]);
+    setMergePullColumns([]);
+    setMergeSimulation(null);
+    setMergeValidationReport(null);
+    setPendingBaseCols([]);
+  }, [setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport]);
+
+  // --- Skip Merge ---
+
+  const handleSkipMerge = useCallback(async () => {
+    if (!sessionId || groupSchema.length === 0) return;
+    const baseId = mergeBaseGroupId || groupSchema[0].group_id;
+    setAiLoading(true);
+    setLoadingMessage("Using single table as final file...");
+    addLog("Merge", "info", "Skipping merge — using single table as final file.");
+    try {
+      const res = await fetch("/api/merge/skip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, baseGroupId: baseId }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Skip merge failed");
+      const data = await res.json();
+      setMergeResult(data);
+      addLog("Merge", "success", `Final file: ${data.rows} rows × ${data.cols} columns (no merge)`);
+      setStep(7);
+    } catch (err: any) {
+      setError(err.message || "Skip merge failed");
+      addLog("Merge", "error", err.message || "Skip merge failed");
+    } finally {
+      setAiLoading(false);
+    }
+  }, [sessionId, groupSchema, mergeBaseGroupId, addLog, setError, setAiLoading, setLoadingMessage, setMergeResult, setStep]);
+
+  // --- Download helpers ---
+
+  const downloadCsv = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/merge/download-csv?sessionId=${encodeURIComponent(sessionId)}`);
+      if (!res.ok) throw new Error("Failed to download CSV");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "final_merged.csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setError(err.message || "CSV download failed");
+    }
+  }, [sessionId, setError]);
+
+  const downloadReport = useCallback(() => {
+    if (!mergeResult) return;
+    const blob = new Blob([JSON.stringify(mergeResult, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "merge_audit_report.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [mergeResult]);
+
+  // ===================== COLUMN COLOR HELPERS =====================
+
+  function getColColor(col: string, side: "base" | "source"): string {
+    const cc = side === "base" ? commonByBase.get(col) : commonBySource.get(col);
+    if (cc?.color) return cc.color;
+    const cls = side === "base" ? baseColClasses[col] : sourceColClasses[col];
+    return cls?.color || "grey";
+  }
+
+  function getColBgClass(col: string, side: "base" | "source"): string {
+    const cc = side === "base" ? commonByBase.get(col) : commonBySource.get(col);
+    if (cc) return COLOR_MAP[cc.color] || COLOR_MAP.grey;
+    const cls = side === "base" ? baseColClasses[col] : sourceColClasses[col];
+    if (cls?.color && COLOR_MAP[cls.color]) return COLOR_MAP[cls.color];
+    return "bg-neutral-50 border-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-400";
+  }
+
+  // ===================== RENDER =====================
+
+  if (step !== 6 && step !== 7) return null;
+
+  if (step === 7) {
+    return (
+      <MergeReport
+        mergeResult={mergeResult}
+        mergeApprovedSources={mergeApprovedSources}
+        groupNameMap={groupNameMap}
+        onDownloadCsv={downloadCsv}
+        onDownloadReport={downloadReport}
+        onProceedToAnalysis={onProceedToAnalysis}
+      />
+    );
+  }
+
+  const hasMultipleGroups = groupSchema.length > 1;
+  const canExecute = mergeSelectedKeys.length > 0;
+  const availableSources = groupSchema.filter((g: any) => g.group_id !== mergeBaseGroupId);
+
+  // --- Full-screen Overlay (Portal) ---
+  const fullscreenOverlay = expanded ? ReactDOM.createPortal(
+    <div className="fixed inset-0 z-[9999] bg-white dark:bg-neutral-900 flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-200 dark:border-neutral-700 shrink-0">
+        <h3 className="text-lg font-bold text-neutral-900 dark:text-white">
+          Column Preview — Base vs Source
+        </h3>
+        <button
+          onClick={() => setExpanded(false)}
+          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-sm font-medium transition-colors"
+        >
+          <Minimize2 className="w-4 h-4" /> Close
+        </button>
+      </div>
+      <div className="flex-1 grid grid-cols-2 gap-4 p-6 overflow-hidden">
+        {renderTable("base", true)}
+        {renderTable("source", true)}
+      </div>
+    </div>,
+    document.body
+  ) : null;
+
+  function renderTable(side: "base" | "source", isExpanded: boolean) {
+    const preview = side === "base" ? basePreview : sourcePreview;
+    const columns = preview?.columns || (side === "base" ? allBaseColumns : allSourceColumns);
+    const rows = preview?.rows || [];
+    const groupId = side === "base" ? mergeBaseGroupId : currentSourceGroupId;
+    const label = side === "base" ? "Base" : "Source";
+
+    return (
+      <div className="flex flex-col min-h-0">
+        <h4 className="text-xs font-bold text-neutral-500 dark:text-neutral-400 mb-2 uppercase tracking-wider shrink-0">
+          {label}: {groupNameMap[groupId] || groupId}
+        </h4>
+        <div className={`overflow-auto rounded-xl border border-neutral-200 dark:border-neutral-700 ${isExpanded ? "flex-1" : "max-h-[400px]"}`}>
+          <table className="w-full text-[11px]">
+            <thead className="sticky top-0 z-10">
+              {/* Row 1: Key checkboxes above the headers */}
+              <tr className="bg-neutral-100/80 dark:bg-neutral-800/80">
+                {columns.map((col) => {
+                  const isKey = side === "base"
+                    ? mergeSelectedKeys.some((k) => k.base_col === col)
+                    : mergeSelectedKeys.some((k) => k.source_col === col);
+                  const isPending = side === "base" && pendingBaseCols.includes(col);
+
+                  return (
+                    <td
+                      key={col}
+                      className="px-2 py-1.5 text-center border-b border-neutral-200 dark:border-neutral-700"
+                    >
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (side === "base") handleBaseKeyCheck(col);
+                          else handleSourceKeyCheck(col);
+                        }}
+                        className="mx-auto block"
+                        title={
+                          isKey
+                            ? "Remove key"
+                            : side === "base"
+                            ? isPending ? "Click again to deselect" : "Select as base key column"
+                            : pendingBaseCols.length > 0 ? `Pair with base "${pendingBaseCols[0]}"` : "Select a base column first"
+                        }
+                      >
+                        <span className={`inline-flex items-center justify-center w-5 h-5 rounded border-2 transition-colors cursor-pointer ${
+                          isKey
+                            ? "bg-red-500 border-red-500 text-white"
+                            : isPending
+                            ? "border-blue-400 bg-blue-50 dark:bg-blue-950/30"
+                            : "border-neutral-300 dark:border-neutral-600 hover:border-red-400 hover:bg-red-50 dark:hover:bg-red-950/20"
+                        }`}>
+                          {isKey && <Key className="w-3 h-3" />}
+                          {isPending && !isKey && <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />}
+                        </span>
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+
+              {/* Row 2: Column headers — source side headers are clickable for pull */}
+              <tr>
+                {columns.map((col) => {
+                  const cc = side === "base" ? commonByBase.get(col) : commonBySource.get(col);
+                  const cls = side === "base" ? baseColClasses[col] : sourceColClasses[col];
+                  const isKey = side === "base"
+                    ? mergeSelectedKeys.some((k) => k.base_col === col)
+                    : mergeSelectedKeys.some((k) => k.source_col === col);
+                  const isPull = side === "source" && mergePullColumns.includes(col);
+                  const bgClass = getColBgClass(col, side);
+                  const color = getColColor(col, side);
+                  const isSourceClickable = side === "source" && !isKey;
+                  const categoryLabel = cc?.category || cls?.category || "";
+
+                  return (
+                    <th
+                      key={col}
+                      className={`px-2 py-2 font-bold whitespace-nowrap border-b select-none transition-all ${bgClass} ${
+                        isSourceClickable ? "cursor-pointer hover:opacity-80" : ""
+                      } ${isPull ? "ring-2 ring-blue-500 ring-inset" : ""} ${isKey ? "ring-2 ring-red-500 ring-inset" : ""}`}
+                      onClick={() => { if (side === "source") handleSourceHeaderClick(col); }}
+                      title={
+                        side === "source"
+                          ? isKey
+                            ? `Key column — paired for join`
+                            : isPull
+                            ? `Click to un-pull "${col}"`
+                            : `Click to pull "${col}" into merged output`
+                          : categoryLabel
+                          ? `${categoryLabel} (${cc?.eligibility || cls?.eligibility || ""})`
+                          : col
+                      }
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {/* Pull indicator on source headers */}
+                        {side === "source" && (
+                          <span className={`inline-flex items-center justify-center w-4 h-4 rounded border-2 shrink-0 transition-colors ${
+                            isPull
+                              ? "bg-blue-500 border-blue-500 text-white"
+                              : isKey
+                              ? "bg-red-500/20 border-red-500/40 text-red-500"
+                              : "border-neutral-300 dark:border-neutral-600"
+                          }`}>
+                            {isPull && <Download className="w-2.5 h-2.5" />}
+                            {isKey && !isPull && <Key className="w-2.5 h-2.5" />}
+                          </span>
+                        )}
+
+                        {/* Color badge for ALL classified columns */}
+                        {color !== "grey" && (
+                          <span className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${BADGE_COLOR_MAP[color] || BADGE_COLOR_MAP.grey}`} />
+                        )}
+
+                        <span className="truncate">{col}</span>
+
+                        {cc && <Link2 className="w-3 h-3 opacity-40 shrink-0" />}
+                      </span>
+
+                      {cc ? (
+                        <span className="block text-[9px] font-normal opacity-60 mt-0.5">
+                          {cc.category} · {Math.round(cc.overlap_pct ?? 0)}% overlap
+                        </span>
+                      ) : categoryLabel && categoryLabel !== "unknown" ? (
+                        <span className="block text-[9px] font-normal opacity-60 mt-0.5">
+                          {categoryLabel}
+                        </span>
+                      ) : null}
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, isExpanded ? 200 : 50).map((row: any, ri: number) => (
+                <tr key={ri} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+                  {columns.map((col) => (
+                    <td key={col} className="px-2 py-1 border-b border-neutral-100 dark:border-neutral-800 whitespace-nowrap max-w-[180px] truncate">
+                      {String(row[col] ?? "")}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={columns.length} className="px-4 py-8 text-center text-neutral-400 text-xs">
+                    No preview data available
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      {/* Step 5: Merge Configuration */}
-      {step === 6 && (
-        <motion.section 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="rounded-3xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-sm overflow-visible"
-        >
-          <div className="p-6 border-b border-neutral-100 dark:border-neutral-800">
-            <h2 className="text-lg font-semibold tracking-tight text-neutral-900 dark:text-white flex items-center gap-2">
-              <Layers className="w-5 h-5 text-red-600 dark:text-red-400" />
-              Merge Configuration
-            </h2>
-            <p className="text-sm text-neutral-500 dark:text-neutral-400 mt-1">Select your primary fact table, configure join keys, and choose enrichment columns.</p>
+    <motion.div variants={itemVariants} className="space-y-6">
+      {fullscreenOverlay}
+
+      {/* Section A: Base & Source Selection */}
+      <SurfaceCard title="Base & Source Selection" icon={Sparkles} subtitle={hasMultipleGroups ? `Merging source ${mergeCurrentSourceIdx + 1} of ${mergeSourceGroupIds.length}` : undefined}>
+        {!hasMultipleGroups && groupSchema.length === 1 && (
+          <div className="text-sm text-neutral-500 dark:text-neutral-400 mb-4">
+            Only one table available.{" "}
+            <button onClick={handleSkipMerge} className="text-red-600 dark:text-red-400 font-semibold hover:underline">
+              Skip Merge
+            </button>
           </div>
-          
-          <div className="p-6 space-y-8">
-            {groupSchema.length === 0 ? (
-              <EmptyState
-                icon={Layers}
-                title="No Groups Available"
-                description="Complete the Append Strategy step to generate unified tables for merging."
-              />
-            ) : (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div className="space-y-4">
-                    <label className="flex items-center gap-2 text-sm font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
-                      <Database className="w-4 h-4" />
-                      Base Fact Table
-                    </label>
-                    <div className="relative">
-                      <select
-                        value={mainGroupId}
-                        onChange={(e) => setMainGroupId(e.target.value)}
-                        className="block w-full pl-4 pr-10 py-3 text-sm border-neutral-200 dark:border-neutral-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 rounded-xl bg-white dark:bg-neutral-900 shadow-sm transition-all appearance-none"
-                      >
-                        <option value="">-- Select Fact Table --</option>
-                        {groupSchema.map((g) => (
-                          <option key={g.group_id} value={g.group_id}>
-                            {gn(g.group_id)} ({g.rows.toLocaleString()} rows)
-                          </option>
-                        ))}
-                      </select>
-                      <div className="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none text-neutral-400 dark:text-neutral-500">
-                        <ChevronRight className="w-4 h-4 rotate-90" />
-                      </div>
-                    </div>
-                    <p className="text-xs text-neutral-400 dark:text-neutral-500 leading-relaxed">
-                      This is your primary dataset. All other tables will be joined to this one. The final row count will match this table.
-                    </p>
-                  </div>
-                  
-                  <div className="space-y-4">
-                    <label className="flex items-center gap-2 text-sm font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
-                      <Columns className="w-4 h-4" />
-                      Dimension Tables
-                    </label>
-                    <div className="space-y-2 max-h-64 overflow-y-auto border border-neutral-200 dark:border-neutral-700 rounded-xl p-3 bg-neutral-50/50 dark:bg-neutral-800/50">
-                      {groupSchema.filter(g => g.group_id !== mainGroupId).map((g) => (
-                        <div key={g.group_id}>
-                          <label className="flex items-center p-3 hover:bg-white dark:hover:bg-neutral-800 rounded-lg transition-all cursor-pointer border border-transparent hover:border-neutral-200 dark:hover:border-neutral-700 hover:shadow-sm group">
-                            <div className="relative flex items-center">
-                              <input
-                                type="checkbox"
-                                checked={dimensionGroupIds.includes(g.group_id)}
-                                onChange={(e) => {
-                                  if (e.target.checked) {
-                                    setDimensionGroupIds([...dimensionGroupIds, g.group_id]);
-                                  } else {
-                                    setDimensionGroupIds(dimensionGroupIds.filter(id => id !== g.group_id));
-                                  }
-                                }}
-                                className="h-4 w-4 text-red-600 focus:ring-red-500 border-neutral-300 rounded transition-all"
-                              />
-                            </div>
-                            <div className="ml-3 flex-1">
-                              <p className="text-sm font-semibold text-neutral-700 dark:text-neutral-300 group-hover:text-red-600 dark:group-hover:text-red-400 transition-colors">{gn(g.group_id)}</p>
-                              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-medium uppercase tracking-tighter">{g.rows.toLocaleString()} rows • {g.columns.length} columns</p>
-                            </div>
-                          </label>
-                          {g.columns_preview && (
-                            <p className="ml-10 -mt-1 mb-1 text-[10px] text-neutral-400 dark:text-neutral-500 truncate max-w-[250px]" title={g.columns_preview}>
-                              {g.columns_preview}
-                            </p>
-                          )}
-                        </div>
-                      ))}
-                      {groupSchema.filter(g => g.group_id !== mainGroupId).length === 0 && mainGroupId && (
-                        <div className="py-8 text-center">
-                          <p className="text-sm text-neutral-400 dark:text-neutral-500 italic">No other tables available to merge.</p>
-                        </div>
-                      )}
-                      {!mainGroupId && groupSchema.length > 0 && (
-                        <div className="py-8 text-center">
-                          <p className="text-sm text-neutral-400 dark:text-neutral-500 italic">Select a fact table first.</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Compatibility Analysis Panel */}
-                {mainGroupId && dimensionGroupIds.length > 0 && (
-                  <div className="border border-neutral-200 dark:border-neutral-700 rounded-2xl overflow-hidden">
-                    <div className="flex items-center justify-between px-5 py-3 bg-neutral-50 dark:bg-neutral-800 border-b border-neutral-100 dark:border-neutral-700">
-                      <div className="flex items-center gap-2">
-                        <Search className="w-4 h-4 text-red-500" />
-                        <h3 className="text-sm font-bold text-neutral-900 dark:text-white">Compatibility Analysis</h3>
-                        <span className="text-[10px] text-neutral-400 dark:text-neutral-500">Which dimensions to merge and why</span>
-                      </div>
-                      {handleMergeCompatibility && (
-                        <SecondaryButton
-                          onClick={handleMergeCompatibility}
-                          disabled={compatibilityLoading || loading}
-                        >
-                          {compatibilityLoading ? <Loader2 className="animate-spin w-3.5 h-3.5" /> : <Sparkles className="w-3.5 h-3.5" />}
-                          {mergeCompatibility ? "Re-analyze" : "Analyze Compatibility"}
-                        </SecondaryButton>
-                      )}
-                    </div>
-
-                    {compatibilityLoading && (
-                      <div className="p-5 space-y-3">
-                        <SkeletonBlock className="h-16 rounded-xl" />
-                        <div className="grid grid-cols-2 gap-3">
-                          <SkeletonBlock className="h-24 rounded-xl" />
-                          <SkeletonBlock className="h-24 rounded-xl" />
-                        </div>
-                      </div>
-                    )}
-
-                    {!compatibilityLoading && mergeCompatibility && mergeCompatibility.length > 0 && (
-                      <div className="p-5 space-y-3">
-                        {mergeCompatibility.map((result: any) => {
-                          const actionColors: Record<string, string> = {
-                            merge: "border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30",
-                            optional: "border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30",
-                            skip: "border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800",
-                          };
-                          const badgeColors: Record<string, string> = {
-                            merge: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
-                            optional: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
-                            skip: "bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400",
-                          };
-                          const action = result.action || "skip";
-                          return (
-                            <div key={result.dim_group_id} className={`border rounded-xl p-4 ${actionColors[action] || actionColors.skip}`}>
-                              <div className="flex items-center justify-between mb-2">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-sm font-bold text-neutral-900 dark:text-white">{gn(result.dim_group_id)}</span>
-                                  <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${badgeColors[action] || badgeColors.skip}`}>
-                                    {action}
-                                  </span>
-                                </div>
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-[10px] font-bold text-neutral-400 dark:text-neutral-500">Priority</span>
-                                  <span className="text-sm font-black tabular-nums text-neutral-900 dark:text-white">{result.priority_score}</span>
-                                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500">/100</span>
-                                </div>
-                              </div>
-
-                              <p className="text-xs text-neutral-600 dark:text-neutral-300 leading-relaxed mb-3">{result.rationale}</p>
-
-                              {result.likely_join_keys?.length > 0 && (
-                                <div className="mb-2">
-                                  <span className="text-[10px] font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Likely Join Keys</span>
-                                  <div className="flex flex-wrap gap-1.5 mt-1">
-                                    {result.likely_join_keys.map((jk: any, idx: number) => (
-                                      <span key={idx} className="inline-flex items-center gap-1 text-[10px] font-medium bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 px-2 py-0.5 rounded-md">
-                                        <Key className="w-2.5 h-2.5 text-neutral-400" />
-                                        {jk.fact_col} ↔ {jk.dim_col}
-                                        <span className="text-neutral-400">({(jk.confidence * 100).toFixed(0)}%)</span>
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-
-                              {result.enrichment_columns?.length > 0 && (
-                                <div className="mb-2">
-                                  <span className="text-[10px] font-bold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">Enrichment Columns</span>
-                                  <div className="flex flex-wrap gap-1 mt-1">
-                                    {result.enrichment_columns.map((ec: any) => (
-                                      <span key={ec.name} className="text-[10px] font-medium bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 px-1.5 py-0.5 rounded" title={ec.value}>
-                                        {ec.name} <span className="text-neutral-400">({ec.category})</span>
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-
-                              {result.warnings?.length > 0 && (
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                  {result.warnings.map((w: string, idx: number) => (
-                                    <span key={idx} className="inline-flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-400">
-                                      <AlertTriangle className="w-2.5 h-2.5" /> {w}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {!compatibilityLoading && !mergeCompatibility && (
-                      <div className="p-5 text-center">
-                        <p className="text-xs text-neutral-400 dark:text-neutral-500">Click &quot;Analyze Compatibility&quot; to see which dimensions are worth merging, what columns they add, and likely join keys.</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {mergeKeys.length > 0 && (
-                  <div className="space-y-4 border-t border-neutral-100 dark:border-neutral-800 pt-6">
-                    <div className="flex items-center gap-2">
-                      <Key className="w-5 h-5 text-red-600 dark:text-red-400" />
-                      <h3 className="text-lg font-semibold text-neutral-900 dark:text-white">Key Discovery Results</h3>
-                      <p className="text-sm text-neutral-500 dark:text-neutral-400 ml-2">AI-discovered join keys (editable)</p>
-                    </div>
-                    {mergeKeys.map((mk, i) => {
-                      const mainGroup = groupSchema.find(g => g.group_id === mainGroupId);
-                      const dimGroup = groupSchema.find(g => g.group_id === mk.dimension_group);
-                      const mainCols: string[] = mainGroup?.columns || [];
-                      const dimCols: string[] = dimGroup?.columns || [];
-                      const extraKeys: Array<{ fact_key: string; dim_key: string }> = mk.extra_keys || [];
-
-                      const updateKey = (field: "fact_key" | "dim_key", value: string) => {
-                        const newKey = { ...mk, [field]: value };
-                        if (newKey.fact_key && newKey.dim_key) newKey.status = "proposed";
-                        const updated = mergeKeys.map((k, idx) => idx === i ? newKey : k);
-                        setMergeKeys(updated);
-                        refreshMatchRate(i, newKey);
-                      };
-
-                      const addExtraKey = () => {
-                        const updated = mergeKeys.map((k, idx) => {
-                          if (idx !== i) return k;
-                          return { ...k, extra_keys: [...(k.extra_keys || []), { fact_key: "", dim_key: "" }] };
-                        });
-                        setMergeKeys(updated);
-                      };
-
-                      const updateExtraKey = (ekIdx: number, field: "fact_key" | "dim_key", value: string) => {
-                        const newExtras = [...(mk.extra_keys || [])];
-                        newExtras[ekIdx] = { ...newExtras[ekIdx], [field]: value };
-                        const newMk = { ...mk, extra_keys: newExtras };
-                        const updated = mergeKeys.map((k, idx) => idx === i ? newMk : k);
-                        setMergeKeys(updated);
-                        refreshMatchRate(i, newMk);
-                      };
-
-                      const removeExtraKey = (ekIdx: number) => {
-                        const newExtras = [...(mk.extra_keys || [])];
-                        newExtras.splice(ekIdx, 1);
-                        const newMk = { ...mk, extra_keys: newExtras };
-                        const updated = mergeKeys.map((k, idx) => idx === i ? newMk : k);
-                        setMergeKeys(updated);
-                        refreshMatchRate(i, newMk);
-                      };
-
-                      return (
-                        <motion.div key={i} whileHover={{ y: -2 }} className="border border-neutral-200 dark:border-neutral-700 rounded-2xl p-5 bg-white dark:bg-neutral-900 hover:border-red-200 transition-all shadow-sm">
-                          <div className="flex justify-between items-center mb-6">
-                            <div className="flex items-center gap-2">
-                              <div>
-                                <h3 className="font-bold text-neutral-900 dark:text-white">{gn(mk.dimension_group)}</h3>
-                                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 uppercase font-bold tracking-wider">Dimension Table</p>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => setPreviewTarget({
-                                  factGroupId: mainGroupId,
-                                  dimGroupId: mk.dimension_group,
-                                  factKey: mk.fact_key,
-                                  dimKey: mk.dim_key,
-                                  extraKeys: mk.extra_keys,
-                                })}
-                                className="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 dark:text-neutral-500 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                                title="Preview tables side by side"
-                              >
-                                <Eye className="w-3.5 h-3.5" />
-                              </button>
-                              {onSelectChatItem && (
-                                <button
-                                  type="button"
-                                  onClick={() => onSelectChatItem({ type: "merge_key", id: mk.dimension_group, label: `Merge: ${mk.dimension_group}` })}
-                                  className="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 dark:text-neutral-500 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                                  title="Ask AI about this merge"
-                                >
-                                  <MessageSquare className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2">
-                              {mk.confidence != null && (
-                                <span className="text-[10px] font-bold text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-neutral-800 px-2 py-1 rounded-full">
-                                  {(mk.confidence * 100).toFixed(0)}% conf
-                                </span>
-                              )}
-                              <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
-                                mk.status === 'proposed' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border-emerald-200' :
-                                mk.status === 'review_needed' ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200' :
-                                mk.status === 'blocked_risky_join' ? 'bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 border-red-200' :
-                                'bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 border-red-200'
-                              }`}>
-                                {mk.status === 'blocked_risky_join' ? 'BLOCKED' : mk.status === 'review_needed' ? 'REVIEW' : mk.status}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="space-y-3">
-                            {/* Primary key pair */}
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
-                              <div className="bg-neutral-50 dark:bg-neutral-800 rounded-xl p-3 border border-neutral-100 dark:border-neutral-800">
-                                <p className="text-[10px] font-bold text-neutral-400 dark:text-neutral-500 uppercase mb-2">Fact Key (Base)</p>
-                                <select
-                                  value={mk.fact_key || ""}
-                                  onChange={(e) => updateKey("fact_key", e.target.value)}
-                                  className="w-full text-sm font-bold text-red-600 dark:text-red-400 border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 appearance-none"
-                                >
-                                  <option value="">-- select column --</option>
-                                  {mainCols.map(c => <option key={c} value={c}>{c}</option>)}
-                                </select>
-                              </div>
-                              <div className="flex justify-center">
-                                <div className="h-px bg-neutral-200 dark:bg-neutral-700 w-full relative">
-                                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-neutral-900 px-2">
-                                    <ArrowRight className="w-4 h-4 text-neutral-300 dark:text-neutral-600" />
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="bg-neutral-50 dark:bg-neutral-800 rounded-xl p-3 border border-neutral-100 dark:border-neutral-800">
-                                <p className="text-[10px] font-bold text-neutral-400 dark:text-neutral-500 uppercase mb-2">Dimension Key</p>
-                                <select
-                                  value={mk.dim_key || ""}
-                                  onChange={(e) => updateKey("dim_key", e.target.value)}
-                                  className="w-full text-sm font-bold text-red-600 dark:text-red-400 border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 appearance-none"
-                                >
-                                  <option value="">-- select column --</option>
-                                  {dimCols.map(c => <option key={c} value={c}>{c}</option>)}
-                                </select>
-                              </div>
-                            </div>
-
-                            {/* Extra key pairs */}
-                            {extraKeys.map((ek, ekIdx) => (
-                              <div key={ekIdx} className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr_auto] gap-4 items-center">
-                                <div className="bg-neutral-50 dark:bg-neutral-800 rounded-xl p-3 border border-neutral-100 dark:border-neutral-800">
-                                  <p className="text-[10px] font-bold text-neutral-400 dark:text-neutral-500 uppercase mb-2">Fact Key {ekIdx + 2}</p>
-                                  <select
-                                    value={ek.fact_key || ""}
-                                    onChange={(e) => updateExtraKey(ekIdx, "fact_key", e.target.value)}
-                                    className="w-full text-sm font-bold text-red-600 dark:text-red-400 border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 appearance-none"
-                                  >
-                                    <option value="">-- select column --</option>
-                                    {mainCols.map(c => <option key={c} value={c}>{c}</option>)}
-                                  </select>
-                                </div>
-                                <div className="flex justify-center">
-                                  <ArrowRight className="w-4 h-4 text-neutral-300 dark:text-neutral-600" />
-                                </div>
-                                <div className="bg-neutral-50 dark:bg-neutral-800 rounded-xl p-3 border border-neutral-100 dark:border-neutral-800">
-                                  <p className="text-[10px] font-bold text-neutral-400 dark:text-neutral-500 uppercase mb-2">Dimension Key {ekIdx + 2}</p>
-                                  <select
-                                    value={ek.dim_key || ""}
-                                    onChange={(e) => updateExtraKey(ekIdx, "dim_key", e.target.value)}
-                                    className="w-full text-sm font-bold text-red-600 dark:text-red-400 border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 appearance-none"
-                                  >
-                                    <option value="">-- select column --</option>
-                                    {dimCols.map(c => <option key={c} value={c}>{c}</option>)}
-                                  </select>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => removeExtraKey(ekIdx)}
-                                  className="p-2 rounded-lg text-neutral-400 dark:text-neutral-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-                                  title="Remove this key pair"
-                                >
-                                  <X className="w-4 h-4" />
-                                </button>
-                              </div>
-                            ))}
-
-                            {/* Add extra key button */}
-                            <button
-                              type="button"
-                              onClick={addExtraKey}
-                              className="inline-flex items-center gap-1.5 text-xs font-bold text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors mt-1"
-                            >
-                              <Plus className="w-3.5 h-3.5" />
-                              Add Key Pair
-                            </button>
-                          </div>
-
-                          {mk.match_rate != null && mk.match_rate > 0 && (
-                            <div className="mt-4 pt-4 border-t border-neutral-100 dark:border-neutral-800 flex gap-8 flex-wrap">
-                              <div className="flex flex-col">
-                                <span className="text-[10px] text-neutral-400 dark:text-neutral-500 font-bold uppercase">Match Rate</span>
-                                <div className="flex items-center gap-2">
-                                  <div className="w-16 h-1.5 bg-neutral-100 dark:bg-neutral-700 rounded-full overflow-hidden">
-                                    <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${mk.match_rate * 100}%` }}></div>
-                                  </div>
-                                  <span className="text-sm font-bold text-neutral-900 dark:text-white">{(mk.match_rate * 100).toFixed(1)}%</span>
-                                </div>
-                              </div>
-                              {mk.distinct_matches != null && (
-                                <div className="flex flex-col">
-                                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500 font-bold uppercase">Unique Matches</span>
-                                  <span className="text-sm font-bold text-neutral-900 dark:text-white">{mk.distinct_matches?.toLocaleString()}</span>
-                                </div>
-                              )}
-                              {mk.join_type && (
-                                <div className="flex flex-col">
-                                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500 font-bold uppercase">Join Type</span>
-                                  <span className="text-sm font-bold text-neutral-900 dark:text-white">{mk.join_type.replace(/_/g, ' ')}</span>
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {mk.risk_flags && mk.risk_flags.length > 0 && (
-                            <div className="mt-3 flex flex-wrap gap-1.5">
-                              {mk.risk_flags.map((flag: string) => (
-                                <span key={flag} className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
-                                  <ShieldAlert className="w-3 h-3" />
-                                  {flag.replace(/_/g, ' ')}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-
-                          {mk.rationale && (
-                            <div className="mt-3 flex items-start gap-2 bg-blue-50 dark:bg-blue-950/20 rounded-xl p-3 border border-blue-100 dark:border-blue-900/40">
-                              <Info className="w-3.5 h-3.5 text-blue-500 mt-0.5 shrink-0" />
-                              <p className="text-xs text-blue-700 dark:text-blue-300 leading-relaxed">{mk.rationale}</p>
-                            </div>
-                          )}
-
-                          {mk.simulation && (
-                            <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2">
-                              <div className="bg-neutral-50 dark:bg-neutral-800 rounded-lg p-2 text-center">
-                                <p className="text-[9px] font-bold text-neutral-400 dark:text-neutral-500 uppercase">Row Expansion</p>
-                                <p className={`text-sm font-black tabular-nums ${(mk.simulation?.rowExpansionRatio ?? 1) > 1.02 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
-                                  {(mk.simulation?.rowExpansionRatio ?? 1).toFixed(3)}x
-                                </p>
-                              </div>
-                              <div className="bg-neutral-50 dark:bg-neutral-800 rounded-lg p-2 text-center">
-                                <p className="text-[9px] font-bold text-neutral-400 dark:text-neutral-500 uppercase">Null Estimate</p>
-                                <p className="text-sm font-black tabular-nums text-neutral-700 dark:text-neutral-300">
-                                  {((mk.simulation?.addedColumnNullRateEstimate ?? 0) * 100).toFixed(1)}%
-                                </p>
-                              </div>
-                              <div className="bg-neutral-50 dark:bg-neutral-800 rounded-lg p-2 text-center">
-                                <p className="text-[9px] font-bold text-neutral-400 dark:text-neutral-500 uppercase">Matched Rows</p>
-                                <p className="text-sm font-black tabular-nums text-neutral-700 dark:text-neutral-300">
-                                  {mk.simulation.matchedFactRows?.toLocaleString()}
-                                </p>
-                              </div>
-                              <div className="bg-neutral-50 dark:bg-neutral-800 rounded-lg p-2 text-center">
-                                <p className="text-[9px] font-bold text-neutral-400 dark:text-neutral-500 uppercase">Dup Dim Keys</p>
-                                <p className={`text-sm font-black tabular-nums ${(mk.simulation?.duplicatedDimKeys ?? 0) > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
-                                  {(mk.simulation?.duplicatedDimKeys ?? 0).toLocaleString()}
-                                </p>
-                              </div>
-                            </div>
-                          )}
-
-                          {mk.alternatives && mk.alternatives.length > 0 && (
-                            <details className="mt-3">
-                              <summary className="text-[10px] font-bold text-neutral-500 dark:text-neutral-400 uppercase cursor-pointer hover:text-red-600 dark:hover:text-red-400 transition-colors flex items-center gap-1">
-                                <Sparkles className="w-3 h-3" />
-                                {mk.alternatives.length} Alternative{mk.alternatives.length > 1 ? 's' : ''}
-                              </summary>
-                              <div className="mt-2 space-y-1.5">
-                                {mk.alternatives.map((alt: any, altIdx: number) => (
-                                  <div key={altIdx} className="flex items-center gap-3 bg-neutral-50 dark:bg-neutral-800 rounded-lg px-3 py-2 text-xs">
-                                    <span className="font-bold text-neutral-400 dark:text-neutral-500 w-4">{altIdx + 1}.</span>
-                                    <span className="font-mono text-neutral-700 dark:text-neutral-300">
-                                      {alt.factKeys?.join(' + ')} → {alt.dimKeys?.join(' + ')}
-                                    </span>
-                                    <span className="ml-auto text-[10px] font-bold text-neutral-500 dark:text-neutral-400">
-                                      {(alt.confidence * 100).toFixed(0)}%
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            </details>
-                          )}
-
-                          {mk.status === 'no_match_found' && (
-                            <div className="mt-4 bg-amber-50 dark:bg-amber-950/30 rounded-xl p-3 border border-amber-100">
-                              <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">No key auto-discovered. Select columns manually above to create a join.</p>
-                            </div>
-                          )}
-
-                          {mk.status === 'blocked_risky_join' && (
-                            <div className="mt-4 bg-red-50 dark:bg-red-950/30 rounded-xl p-3 border border-red-100 dark:border-red-900/40">
-                              <p className="text-xs text-red-700 dark:text-red-400 font-medium flex items-center gap-1.5">
-                                <ShieldAlert className="w-3.5 h-3.5" />
-                                Blocked: This join was determined to be risky. Review manually or adjust key selection.
-                              </p>
-                            </div>
-                          )}
-
-                          {mk.status === 'review_needed' && !mk.risk_flags?.length && !mk.rationale && (
-                            <div className="mt-4 bg-amber-50 dark:bg-amber-950/30 rounded-xl p-3 border border-amber-100">
-                              <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">This join needs review. Check the key selection and simulation metrics before proceeding.</p>
-                            </div>
-                          )}
-                        </motion.div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {mergeKeys.length > 0 && mergeKeys.some(mk => mk.status === 'proposed' || mk.status === 'review_needed') && (
-                  <div className="space-y-8 border-t border-neutral-100 dark:border-neutral-800 pt-6">
-                    <div className="flex items-center gap-2">
-                      <Columns className="w-5 h-5 text-red-600 dark:text-red-400" />
-                      <h3 className="text-lg font-semibold text-neutral-900 dark:text-white">Column Enrichment</h3>
-                      <p className="text-sm text-neutral-500 dark:text-neutral-400 ml-2">Choose attributes to add to the final file</p>
-                    </div>
-                    {mergeKeys.filter(mk => mk.status === 'proposed' || mk.status === 'review_needed').map((mk) => {
-                      const dimGroup = groupSchema.find(g => g.group_id === mk.dimension_group);
-                      if (!dimGroup) return null;
-                      const allDimKeys = new Set([mk.dim_key, ...(mk.extra_keys || []).map((ek: any) => ek.dim_key)].filter(Boolean));
-                      const availableCols = dimGroup.columns.filter((c: string) => !allDimKeys.has(c));
-                      const selectedCount = dimColumnsToAdd[mk.dimension_group]?.length || 0;
-                      
-                      return (
-                        <div key={mk.dimension_group} className="space-y-4">
-                          {mk.join_strategy === "aggregated" && (
-                            <div className="flex items-start gap-3 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl text-amber-800 dark:text-amber-300 text-sm">
-                              <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                              <span>This dimension file was aggregated to match the fact file&apos;s granularity. Numeric columns have been summed; text columns use the first available value. Pulled values may differ from raw row-level data.</span>
-                            </div>
-                          )}
-                          <div className="flex justify-between items-center gap-3">
-                            <h3 className="font-bold text-neutral-900 dark:text-white">{gn(mk.dimension_group)}</h3>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => setDimColumnsToAdd({ ...dimColumnsToAdd, [mk.dimension_group]: [...availableCols] })}
-                                className="text-[10px] font-bold text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-400 transition-colors"
-                              >
-                                Select All
-                              </button>
-                              <span className="text-neutral-300 dark:text-neutral-600">|</span>
-                              <button
-                                type="button"
-                                onClick={() => setDimColumnsToAdd({ ...dimColumnsToAdd, [mk.dimension_group]: [] })}
-                                className="text-[10px] font-bold text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-300 transition-colors"
-                              >
-                                Deselect All
-                              </button>
-                              <span className="text-[10px] font-bold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 px-2 py-1 rounded-full uppercase">
-                                {selectedCount} / {availableCols.length}
-                              </span>
-                            </div>
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 bg-neutral-50 dark:bg-neutral-800 p-4 rounded-2xl border border-neutral-100 dark:border-neutral-800">
-                            {availableCols.map((col: string) => (
-                              <label key={col} className="flex items-center space-x-3 text-sm p-2.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-xl cursor-pointer hover:border-red-300 hover:shadow-sm transition-all group">
-                                <input
-                                  type="checkbox"
-                                  checked={dimColumnsToAdd[mk.dimension_group]?.includes(col) || false}
-                                  onChange={(e) => {
-                                    const current = dimColumnsToAdd[mk.dimension_group] || [];
-                                    if (e.target.checked) {
-                                      setDimColumnsToAdd({ ...dimColumnsToAdd, [mk.dimension_group]: [...current, col] });
-                                    } else {
-                                      setDimColumnsToAdd({ ...dimColumnsToAdd, [mk.dimension_group]: current.filter(c => c !== col) });
-                                    }
-                                  }}
-                                  className="rounded border-neutral-300 text-red-600 focus:ring-red-500 transition-all"
-                                />
-                                <span className="truncate font-medium text-neutral-600 dark:text-neutral-300 group-hover:text-neutral-900 dark:group-hover:text-white transition-colors" title={col}>{col}</span>
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-          <div className="p-6 border-t border-neutral-100 dark:border-neutral-800 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4">
-            <div className="flex flex-col gap-1">
-              {groupSchema.length >= 1 && (
-                <button
-                  type="button"
-                  onClick={handleSkipMerge}
-                  disabled={loading}
-                  className="text-sm font-medium text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors text-left disabled:opacity-50"
+        )}
+        {hasMultipleGroups && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              {/* Base dropdown */}
+              <div>
+                <label className="block text-xs font-semibold text-neutral-500 dark:text-neutral-400 mb-1.5">
+                  Base Table (left joins from here)
+                </label>
+                <select
+                  value={mergeBaseGroupId}
+                  onChange={(e) => handleBaseChange(e.target.value)}
+                  className="w-full rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2.5 text-sm text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-red-500 focus:border-transparent"
                 >
-                  {groupSchema.length === 1
-                    ? "Only one table — use as final file (skip merge)"
-                    : "Skip merge — use selected fact table as final file"}
-                </button>
-              )}
-            </div>
-            <div className="flex items-center gap-3">
-              {mainGroupId && dimensionGroupIds.length > 0 && (
-                <SecondaryButton onClick={handleMergeSetup} disabled={loading || !mainGroupId}>
-                  {loading ? <Loader2 className="animate-spin w-4 h-4" /> : <Key className="w-4 h-4" />}
-                  {mergeKeys.length > 0 ? "Re-analyze Keys" : "Analyze Join Keys"}
-                </SecondaryButton>
-              )}
-              {mergeKeys.length > 0 && mergeKeys.some(mk => mk.status === 'proposed' || mk.status === 'review_needed' || mk.status === 'manual') && (
-                <PrimaryButton onClick={handleMergeExecute} disabled={loading}>
-                  Execute Final Merge
-                  <ArrowRight className="w-4 h-4" />
-                </PrimaryButton>
-              )}
-            </div>
-          </div>
-        </motion.section>
-      )}
+                  <option value="">Select base table...</option>
+                  {groupSchema.map((g: any) => (
+                    <option key={g.group_id} value={g.group_id}>
+                      {groupNameMap[g.group_id] || g.group_id} ({g.rows} rows, {g.columns?.length || 0} cols)
+                    </option>
+                  ))}
+                </select>
+                {mergeBaseRecommendation?.reasoning && mergeBaseGroupId === mergeBaseRecommendation?.recommended && (
+                  <p className="mt-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3" /> AI Recommended: {mergeBaseRecommendation.reasoning}
+                  </p>
+                )}
+              </div>
 
-      {/* Step 7: Results & Download */}
-      {step === 7 && (
-        <motion.section 
-          initial={{ opacity: 0, scale: 0.97 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="rounded-3xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-sm overflow-hidden"
+              {/* Source dropdown */}
+              <div>
+                <label className="block text-xs font-semibold text-neutral-500 dark:text-neutral-400 mb-1.5">
+                  Source Table ({mergeCurrentSourceIdx + 1}/{mergeSourceGroupIds.length})
+                </label>
+                <select
+                  value={currentSourceGroupId}
+                  onChange={(e) => handleSourceChange(e.target.value)}
+                  className="w-full rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2.5 text-sm text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                >
+                  <option value="">Select source table...</option>
+                  {availableSources.map((g: any) => (
+                    <option key={g.group_id} value={g.group_id}>
+                      {groupNameMap[g.group_id] || g.group_id} ({g.rows} rows, {g.columns?.length || 0} cols)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <button onClick={handleSkipMerge} className="text-xs text-neutral-400 hover:text-red-500 transition-colors">
+              <SkipForward className="w-3 h-3 inline mr-1" />Skip merge entirely
+            </button>
+          </>
+        )}
+      </SurfaceCard>
+
+      {/* Section B: Side-by-Side Preview */}
+      {mergeBaseGroupId && currentSourceGroupId && (
+        <SurfaceCard
+          title="Column Matching & Preview"
+          icon={Link2}
+          subtitle={
+            pendingBaseCols.length > 0
+              ? `Pairing: ${pendingBaseCols.map(c => `"${c}"`).join(", ")} selected — check source key checkbox(es) to pair`
+              : "Use checkboxes above headers for keys. Click source headers to pull columns."
+          }
+          right={
+            <button
+              onClick={() => setExpanded(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-600 dark:text-neutral-300 text-xs font-medium transition-colors"
+              title="Expand to full screen"
+            >
+              <Maximize2 className="w-3.5 h-3.5" /> Full Screen
+            </button>
+          }
         >
-          <MergeReport
-            mergeResult={mergeResult}
-            downloadCsv={downloadCsv}
-            downloadReport={downloadReport}
-            handleGenerateProcurementMapping={handleGenerateProcurementMapping}
-            onProceedToAnalysis={onProceedToAnalysis}
-            onSendToNormalization={onSendToNormalization}
-            loading={loading}
-            onSelectChatItem={onSelectChatItem}
-          />
-        </motion.section>
+          {/* Loading overlay while columns are being analyzed */}
+          {columnsLoading && (
+            <div className="flex items-center gap-3 rounded-xl bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 px-4 py-4 text-sm text-blue-700 dark:text-blue-300 mb-4">
+              <Loader2 className="w-5 h-5 animate-spin shrink-0" />
+              <div>
+                <p className="font-semibold">Analyzing columns...</p>
+                <p className="text-xs opacity-70">Classifying all columns, finding common matches, and computing value overlap. This may take a moment.</p>
+              </div>
+            </div>
+          )}
+
+          {/* No common columns warning */}
+          {mergeCommonColumns.length === 0 && !columnsLoading && allBaseColumns.length > 0 && (
+            <div className="flex items-center gap-2 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 px-4 py-3 text-xs text-amber-700 dark:text-amber-300 mb-4">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              No common columns found automatically. Check a base key checkbox, then check the corresponding source key checkbox to manually pair them.
+            </div>
+          )}
+
+          {/* Pending pairing indicator */}
+          {pendingBaseCols.length > 0 && (
+            <div className="flex items-center gap-2 rounded-xl bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-xs text-blue-700 dark:text-blue-300 mb-4">
+              <Key className="w-4 h-4 shrink-0" />
+              Base column{pendingBaseCols.length > 1 ? "s" : ""} {pendingBaseCols.map(c => `"${c}"`).join(", ")} selected — now check source column key checkbox(es) to create pair(s).
+              <button onClick={() => setPendingBaseCols([])} className="ml-auto text-blue-500 hover:text-blue-700"><X className="w-3.5 h-3.5" /></button>
+            </div>
+          )}
+
+          {/* Color legend — always visible once columns are loaded */}
+          {!columnsLoading && allBaseColumns.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3 mb-4 text-[10px]">
+              <span className="font-semibold text-neutral-400 uppercase tracking-wider">Legend (directional only):</span>
+              <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-emerald-500" /> Identifier (high)</span>
+              <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-amber-500" /> Descriptor (medium)</span>
+              <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-red-500" /> Metric/Weak (low/never)</span>
+              <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-neutral-400" /> Unclassified</span>
+              <span className="flex items-center gap-1 ml-2 pl-2 border-l border-neutral-200 dark:border-neutral-700">
+                <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded border-2 bg-red-500 border-red-500 text-white"><Key className="w-2 h-2" /></span> Key
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded border-2 bg-blue-500 border-blue-500 text-white"><Download className="w-2 h-2" /></span> Pull
+              </span>
+              {mergeCommonColumns.length > 0 && (
+                <span className="flex items-center gap-1">
+                  <Link2 className="w-3 h-3 text-neutral-500" /> Common column
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Key pairs summary */}
+          {mergeSelectedKeys.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-4">
+              <span className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider self-center mr-1">Keys:</span>
+              {mergeSelectedKeys.map((kp, i) => (
+                <span key={i} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 text-xs font-semibold text-red-700 dark:text-red-300">
+                  <Key className="w-3 h-3" />
+                  {kp.base_col} ↔ {kp.source_col}
+                  <button onClick={() => removeKeyPair(kp.base_col, kp.source_col)} className="ml-1 hover:text-red-500">
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Pull columns summary */}
+          {mergePullColumns.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-4">
+              <span className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider self-center mr-1">Pull:</span>
+              {mergePullColumns.map((col) => (
+                <span key={col} className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                  <Download className="w-2.5 h-2.5" />
+                  {col}
+                  <button onClick={() => removePullColumn(col)} className="ml-0.5 hover:text-blue-500"><X className="w-2.5 h-2.5" /></button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Side-by-side tables (inline, not expanded) */}
+          <div className="grid grid-cols-2 gap-4">
+            {renderTable("base", false)}
+            {renderTable("source", false)}
+          </div>
+        </SurfaceCard>
       )}
 
-      {previewTarget && (
-        <TablePreviewOverlay
-          sessionId={sessionId}
-          target={previewTarget}
-          onClose={() => setPreviewTarget(null)}
-        />
+      {/* Section C: Simulation Stats */}
+      {mergeSelectedKeys.length > 0 && (
+        <SurfaceCard title="Join Simulation" subtitle="Auto-updates when keys change">
+          {simLoading && !mergeSimulation && (
+            <div className="flex items-center gap-2 text-sm text-neutral-500">
+              <Loader2 className="w-4 h-4 animate-spin" /> Simulating join...
+            </div>
+          )}
+          {simError && (
+            <div className="flex items-center gap-2 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 px-4 py-3 text-xs text-red-700 dark:text-red-300">
+              <AlertTriangle className="w-4 h-4 shrink-0" /> {simError}
+            </div>
+          )}
+          {mergeSimulation && (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              {[
+                { label: "Match Rate", value: `${mergeSimulation.match_rate}%`, metric: "match_rate", raw: mergeSimulation.match_rate },
+                { label: "Row Explosion", value: `${mergeSimulation.row_explosion_factor}×`, metric: "row_explosion_factor", raw: mergeSimulation.row_explosion_factor },
+                { label: "Unmatched Base", value: mergeSimulation.unmatched_base_count, metric: "unmatched", raw: 0 },
+                { label: "Unmatched Source", value: mergeSimulation.unmatched_source_count, metric: "unmatched", raw: 0 },
+                { label: "Dup Source Keys", value: mergeSimulation.duplicate_source_keys, metric: "dup", raw: 0 },
+                { label: "Est. Null Rate", value: `${mergeSimulation.estimated_null_rate}%`, metric: "estimated_null_rate", raw: mergeSimulation.estimated_null_rate },
+              ].map((s) => (
+                <div key={s.label} className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-3 text-center">
+                  <p className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-1">{s.label}</p>
+                  <p className={`text-lg font-bold tabular-nums ${getStatColor(s.metric, s.raw)}`}>{s.value}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </SurfaceCard>
       )}
-    </div>
+
+      {/* Section D: Execute & Validate */}
+      {mergeBaseGroupId && currentSourceGroupId && !mergeValidationReport && (
+        <div className="flex items-center gap-3">
+          <PrimaryButton
+            onClick={handleExecute}
+            disabled={!canExecute || executingMerge || loading}
+          >
+            {executingMerge ? <><Loader2 className="w-4 h-4 animate-spin" /> Merging...</> : <>Execute Merge <ArrowRight className="w-4 h-4" /></>}
+          </PrimaryButton>
+          {!canExecute && (
+            <p className="text-xs text-neutral-400">Select at least one key pair to execute.</p>
+          )}
+        </div>
+      )}
+
+      {/* Validation Report */}
+      {mergeValidationReport && (
+        <SurfaceCard title="Merge Validation" icon={Check}>
+          <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 px-4 py-3 mb-4">
+            <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+              Source "{groupNameMap[currentSourceGroupId] || currentSourceGroupId}" merged successfully
+            </p>
+            <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
+              {mergeValidationReport.result_rows} rows · {mergeValidationReport.columns_pulled?.length || 0} columns pulled · Explosion factor: {mergeValidationReport.explosion_factor}×
+            </p>
+          </div>
+
+          {mergeValidationReport.column_stats && mergeValidationReport.column_stats.length > 0 && (
+            <div className="overflow-auto max-h-[300px] rounded-xl border border-neutral-200 dark:border-neutral-700 mb-4">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-neutral-50 dark:bg-neutral-800">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-bold text-neutral-500">Column</th>
+                    <th className="px-3 py-2 text-left font-bold text-neutral-500">Fill Rate</th>
+                    <th className="px-3 py-2 text-right font-bold text-neutral-500">Nulls</th>
+                    <th className="px-3 py-2 text-right font-bold text-neutral-500">Distinct</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mergeValidationReport.column_stats.map((cs: any) => (
+                    <tr key={cs.column_name} className="border-t border-neutral-100 dark:border-neutral-800">
+                      <td className="px-3 py-1.5 font-medium text-neutral-700 dark:text-neutral-300">{cs.column_name}</td>
+                      <td className="px-3 py-1.5"><FillBar rate={cs.fill_rate} /></td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-neutral-500">{cs.null_count}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-neutral-500">{cs.distinct_count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {mergeValidationReport.preview && mergeValidationReport.preview.length > 0 && (
+            <details className="mb-4">
+              <summary className="text-xs font-semibold text-neutral-500 cursor-pointer hover:text-neutral-700 dark:hover:text-neutral-300 mb-2">
+                Preview merged data ({mergeValidationReport.preview.length} rows)
+              </summary>
+              <div className="overflow-auto max-h-[250px] rounded-xl border border-neutral-200 dark:border-neutral-700">
+                <table className="w-full text-[11px]">
+                  <thead className="sticky top-0 bg-neutral-50 dark:bg-neutral-800">
+                    <tr>
+                      {Object.keys(mergeValidationReport.preview[0] || {}).map((col) => (
+                        <th key={col} className="px-2 py-1.5 font-bold text-neutral-500 whitespace-nowrap border-b">{col}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mergeValidationReport.preview.slice(0, 30).map((row: any, ri: number) => (
+                      <tr key={ri} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+                        {Object.values(row).map((val: any, ci: number) => (
+                          <td key={ci} className="px-2 py-1 border-b border-neutral-100 dark:border-neutral-800 whitespace-nowrap max-w-[180px] truncate">{String(val ?? "")}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
+
+          {(mergeValidationReport.unmatched_base_preview?.length > 0 || mergeValidationReport.unmatched_source_preview?.length > 0) && (
+            <details className="mb-4">
+              <summary className="text-xs font-semibold text-amber-600 cursor-pointer hover:text-amber-700 mb-2">
+                Unmatched rows ({mergeValidationReport.unmatched_base_preview?.length || 0} base, {mergeValidationReport.unmatched_source_preview?.length || 0} source)
+              </summary>
+              {mergeValidationReport.unmatched_base_preview?.length > 0 && (
+                <>
+                  <p className="text-[11px] text-neutral-400 mb-2">Base rows without a match in source:</p>
+                  <div className="overflow-auto max-h-[150px] rounded-lg border border-amber-200 dark:border-amber-800 mb-2">
+                    <table className="w-full text-[10px]">
+                      <thead className="sticky top-0 bg-amber-50 dark:bg-amber-950/30">
+                        <tr>
+                          {Object.keys(mergeValidationReport.unmatched_base_preview[0]).map((col) => (
+                            <th key={col} className="px-2 py-1 font-bold text-amber-600 whitespace-nowrap">{col}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mergeValidationReport.unmatched_base_preview.slice(0, 10).map((row: any, ri: number) => (
+                          <tr key={ri}>
+                            {Object.values(row).map((val: any, ci: number) => (
+                              <td key={ci} className="px-2 py-0.5 whitespace-nowrap max-w-[150px] truncate text-neutral-600 dark:text-neutral-400">{String(val ?? "")}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+              {mergeValidationReport.unmatched_source_preview?.length > 0 && (
+                <>
+                  <p className="text-[11px] text-neutral-400 mb-2">Source rows without a match in base:</p>
+                  <div className="overflow-auto max-h-[150px] rounded-lg border border-amber-200 dark:border-amber-800">
+                    <table className="w-full text-[10px]">
+                      <thead className="sticky top-0 bg-amber-50 dark:bg-amber-950/30">
+                        <tr>
+                          {Object.keys(mergeValidationReport.unmatched_source_preview[0]).map((col) => (
+                            <th key={col} className="px-2 py-1 font-bold text-amber-600 whitespace-nowrap">{col}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mergeValidationReport.unmatched_source_preview.slice(0, 10).map((row: any, ri: number) => (
+                          <tr key={ri}>
+                            {Object.values(row).map((val: any, ci: number) => (
+                              <td key={ci} className="px-2 py-0.5 whitespace-nowrap max-w-[150px] truncate text-neutral-600 dark:text-neutral-400">{String(val ?? "")}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </details>
+          )}
+
+          <div className="flex items-center gap-3 pt-2">
+            <PrimaryButton onClick={handleApprove}>
+              <Check className="w-4 h-4" />
+              {mergeCurrentSourceIdx + 1 < mergeSourceGroupIds.length
+                ? `Approve & Continue (${mergeCurrentSourceIdx + 2}/${mergeSourceGroupIds.length})`
+                : "Approve & Finalize"}
+            </PrimaryButton>
+            <SecondaryButton onClick={handleRedo}>
+              <RotateCcw className="w-4 h-4" />
+              Redo with Different Keys
+            </SecondaryButton>
+          </div>
+        </SurfaceCard>
+      )}
+    </motion.div>
   );
 }

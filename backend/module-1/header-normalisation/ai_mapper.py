@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -46,13 +47,6 @@ AI_VALIDATION_CONF_LOW = 0.65
 PORTKEY_BASE_URL = "https://portkey.bain.dev/v1"
 PORTKEY_MODEL = "@personal-openai/gpt-5.4"
 
-
-# ---------------------------------------------------------------------------
-# Session-level validation cache  (thread-safe)
-# ---------------------------------------------------------------------------
-
-_VALIDATION_CACHE: dict[tuple, dict] = {}
-_VALIDATION_CACHE_LOCK = threading.Lock()
 
 _VALID_STD_NAMES = set(STD_FIELD_NAMES)
 
@@ -123,10 +117,7 @@ def ai_map_unmapped(
 ) -> list[dict]:
     """Send all UNMAPPED headers to the AI for field mapping.
 
-    Each item in *unmapped_items* must have keys: raw, col_idx.
-    When *profiles*, *det_results_cache*, and *std_field_payload* are provided
-    the rich SYSTEM_PROMPT_HEADER_NORM_COLUMN prompt is used; otherwise falls
-    back to a simpler inline prompt for backward compatibility.
+    Batches are fired concurrently via ThreadPoolExecutor for maximum throughput.
     """
     use_rich = bool(profiles and std_field_payload and system_prompt)
 
@@ -156,10 +147,14 @@ Rules:
 - Return ONLY a valid JSON array. No markdown, no preamble."""
 
     results = {item["raw"]: item for item in unmapped_items}
+    lock = threading.Lock()
 
-    for batch_start in range(0, len(unmapped_items), batch_size):
-        batch = unmapped_items[batch_start:batch_start + batch_size]
+    batches = [
+        unmapped_items[i:i + batch_size]
+        for i in range(0, len(unmapped_items), batch_size)
+    ]
 
+    def _process_batch(batch_idx: int, batch: list[dict]) -> None:
         if use_rich:
             payload = []
             for i, item in enumerate(batch):
@@ -175,57 +170,55 @@ Rules:
             )
         else:
             payload = [
-                {
-                    "idx": i,
-                    "raw": item["raw"],
-                    "sample_values": _get_sample_values(item["col_idx"], data_rows),
-                }
+                {"idx": i, "raw": item["raw"], "sample_values": _get_sample_values(item["col_idx"], data_rows)}
                 for i, item in enumerate(batch)
             ]
             user_content = f"Map these {len(batch)} unmapped headers:\n{json.dumps(payload, ensure_ascii=False)}"
 
         try:
             parsed = _call_ai_json(system_prompt, user_content, api_key)
-
             if isinstance(parsed, dict):
                 parsed = next((v for v in parsed.values() if isinstance(v, list)), [])
             if not isinstance(parsed, list):
                 parsed = []
 
             result_by_idx = {int(r.get("idx", -1)): r for r in parsed if isinstance(r, dict)}
-
-            for i, item in enumerate(batch):
-                result = result_by_idx.get(i)
-                if result is None:
-                    continue
-
-                conf = float(result.get("confidence", 0))
-                mapped = result.get("mapped_to") or result.get("suggested_std_field")
-
-                if mapped and mapped not in _VALID_STD_NAMES:
-                    mapped = None
-
-                if mapped and conf >= AI_CONFIDENCE_THRESHOLD:
-                    results[item["raw"]].update({
-                        "tier": "T8_AI",
-                        "mapped_to": mapped,
-                        "confidence": round(conf, 3),
-                        "action": "AUTO" if conf >= 0.84 else "REVIEW",
-                        "reason": str(result.get("reason", "")),
-                    })
-                else:
-                    results[item["raw"]].update({
-                        "tier": "T8_AI",
-                        "mapped_to": None,
-                        "confidence": round(conf, 3),
-                        "action": "UNMAPPED",
-                        "reason": str(result.get("reason", "")),
-                    })
-
+            with lock:
+                for i, item in enumerate(batch):
+                    result = result_by_idx.get(i)
+                    if result is None:
+                        continue
+                    conf = float(result.get("confidence", 0))
+                    mapped = result.get("mapped_to") or result.get("suggested_std_field")
+                    if mapped and mapped not in _VALID_STD_NAMES:
+                        mapped = None
+                    if mapped and conf >= AI_CONFIDENCE_THRESHOLD:
+                        results[item["raw"]].update({
+                            "tier": "T8_AI", "mapped_to": mapped,
+                            "confidence": round(conf, 3),
+                            "action": "AUTO" if conf >= 0.84 else "REVIEW",
+                            "reason": str(result.get("reason", "")),
+                        })
+                    else:
+                        results[item["raw"]].update({
+                            "tier": "T8_AI", "mapped_to": None,
+                            "confidence": round(conf, 3), "action": "UNMAPPED",
+                            "reason": str(result.get("reason", "")),
+                        })
         except Exception as exc:
-            print(f"[ai_mapper] ai_map_unmapped batch {batch_start}: {exc}", file=sys.stderr)
-            for item in batch:
-                results[item["raw"]].setdefault("ai_error", str(exc))
+            print(f"[ai_mapper] ai_map_unmapped batch {batch_idx}: {exc}", file=sys.stderr)
+            with lock:
+                for item in batch:
+                    results[item["raw"]].setdefault("ai_error", str(exc))
+
+    if len(batches) <= 1:
+        for idx, b in enumerate(batches):
+            _process_batch(idx, b)
+    else:
+        with ThreadPoolExecutor(max_workers=min(6, len(batches))) as pool:
+            futures = {pool.submit(_process_batch, idx, b): idx for idx, b in enumerate(batches)}
+            for fut in as_completed(futures):
+                fut.result()
 
     return list(results.values())
 
@@ -241,7 +234,7 @@ def ai_validate_mapped(
 ) -> int:
     """Validate every already-mapped header via AI.
 
-    Only downgrades AUTO -> REVIEW; never changes mapped_to.
+    Batches run concurrently. Only downgrades AUTO -> REVIEW; never changes mapped_to.
     Returns number of mappings flagged.
     """
     std_list = "\n".join(
@@ -287,73 +280,69 @@ Rules:
         if dec.get("mapped_to") and dec.get("action") in ("AUTO", "REVIEW"):
             samples = _get_sample_values(col_idx, data_rows)
             candidates.append({
-                "col_idx": col_idx,
-                "raw": dec["raw"],
-                "mapped_to": dec["mapped_to"],
-                "samples": samples,
+                "col_idx": col_idx, "raw": dec["raw"],
+                "mapped_to": dec["mapped_to"], "samples": samples,
             })
 
     if not candidates:
         return 0
 
-    flags = 0
     batch_size = 20
+    batches = [candidates[i:i + batch_size] for i in range(0, len(candidates), batch_size)]
+    flags = [0]
+    lock = threading.Lock()
 
-    for batch_start in range(0, len(candidates), batch_size):
-        batch = candidates[batch_start:batch_start + batch_size]
-
+    def _validate_batch(batch: list[dict]) -> None:
         payload = [
             {
-                "idx": i,
-                "original_header": item["raw"],
+                "idx": i, "original_header": item["raw"],
                 "mapped_to": item["mapped_to"],
-                "sample_value_1": item["samples"][0] if len(item["samples"]) > 0 else "",
+                "sample_value_1": item["samples"][0] if item["samples"] else "",
                 "sample_value_2": item["samples"][1] if len(item["samples"]) > 1 else "",
                 "sample_value_3": item["samples"][2] if len(item["samples"]) > 2 else "",
             }
             for i, item in enumerate(batch)
         ]
-
         try:
             parsed = _call_ai_json(
                 system,
-                (
-                    f"Validate these {len(batch)} mappings "
-                    f"(format: Original Header | Mapped Header | "
-                    f"Sample Value 1 | Sample Value 2 | Sample Value 3):\n"
-                    f"{json.dumps(payload, ensure_ascii=False)}"
-                ),
+                f"Validate these {len(batch)} mappings "
+                f"(format: Original Header | Mapped Header | "
+                f"Sample Value 1 | Sample Value 2 | Sample Value 3):\n"
+                f"{json.dumps(payload, ensure_ascii=False)}",
                 api_key,
             )
-
             if isinstance(parsed, dict):
                 parsed = next((v for v in parsed.values() if isinstance(v, list)), [])
             if not isinstance(parsed, list):
                 parsed = []
-
             result_by_idx = {int(r.get("idx", -1)): r for r in parsed if isinstance(r, dict)}
-
-            for i, item in enumerate(batch):
-                result = result_by_idx.get(i)
-                if result is None:
-                    continue
-
-                valid = bool(result.get("valid", True))
-                conf = float(result.get("confidence", 1.0))
-                reason = str(result.get("reason", ""))
-
-                ai_flagged = (not valid) and (conf >= AI_VALIDATION_CONF_LOW)
-
-                if ai_flagged:
-                    dec = decisions[item["col_idx"]]
-                    if dec["action"] == "AUTO":
-                        dec["action"] = "REVIEW"
-                        flags += 1
-                    dec["validation_flag"] = True
-                    dec["validation_confidence"] = round(conf, 3)
-                    dec["validation_reason"] = reason
-
+            with lock:
+                for i, item in enumerate(batch):
+                    result = result_by_idx.get(i)
+                    if result is None:
+                        continue
+                    valid = bool(result.get("valid", True))
+                    conf = float(result.get("confidence", 1.0))
+                    reason = str(result.get("reason", ""))
+                    if (not valid) and (conf >= AI_VALIDATION_CONF_LOW):
+                        dec = decisions[item["col_idx"]]
+                        if dec["action"] == "AUTO":
+                            dec["action"] = "REVIEW"
+                            flags[0] += 1
+                        dec["validation_flag"] = True
+                        dec["validation_confidence"] = round(conf, 3)
+                        dec["validation_reason"] = reason
         except Exception as exc:
-            print(f"[ai_mapper] ai_validate_mapped batch {batch_start}: {exc}", file=sys.stderr)
+            print(f"[ai_mapper] ai_validate_mapped batch: {exc}", file=sys.stderr)
 
-    return flags
+    if len(batches) <= 1:
+        for b in batches:
+            _validate_batch(b)
+    else:
+        with ThreadPoolExecutor(max_workers=min(6, len(batches))) as pool:
+            futures = [pool.submit(_validate_batch, b) for b in batches]
+            for fut in as_completed(futures):
+                fut.result()
+
+    return flags[0]

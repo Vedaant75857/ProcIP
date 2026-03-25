@@ -6,6 +6,7 @@ Both Module 1 and Module 2 use this for all LLM calls.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import time
@@ -44,7 +45,7 @@ def _cache_get(key: str) -> Any | None:
         if expiry < now:
             _AI_JSON_CACHE.pop(key, None)
             return None
-        return json.loads(json.dumps(value))
+        return copy.deepcopy(value)
 
 
 def _cache_put(key: str, value: Any, ttl_sec: int) -> None:
@@ -56,7 +57,7 @@ def _cache_put(key: str, value: Any, ttl_sec: int) -> None:
             # Remove up to 64 oldest-ish entries.
             for k in list(_AI_JSON_CACHE.keys())[:64]:
                 _AI_JSON_CACHE.pop(k, None)
-        _AI_JSON_CACHE[key] = (time.time() + ttl_sec, json.loads(json.dumps(value)))
+        _AI_JSON_CACHE[key] = (time.time() + ttl_sec, copy.deepcopy(value))
 
 
 def _parse_json_payload(raw: str) -> Any:
@@ -95,7 +96,7 @@ def call_ai_json(
     """Call AI with a system prompt and a user payload, expecting a JSON response."""
     client = get_client(api_key)
     mdl = model or get_model()
-    cache_ttl = max(0, int(os.getenv("AI_JSON_CACHE_TTL_SEC", "60")))
+    cache_ttl = max(0, int(os.getenv("AI_JSON_CACHE_TTL_SEC", "300")))
     ckey = _cache_key(mdl, system_prompt, user_obj, api_key)
     cached = _cache_get(ckey) if cache_ttl > 0 else None
     if cached is not None:

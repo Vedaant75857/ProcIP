@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { Database, AlertCircle, CheckCircle2, KeyRound, RefreshCw, MessageSquare, Sun, Moon, Table2, Sparkles, ArrowLeftRight } from "lucide-react";
+import { Database, AlertCircle, CheckCircle2, KeyRound, RefreshCw, MessageSquare, Sun, Moon, Table2, Sparkles } from "lucide-react";
 
 import { AnimatePresence, motion } from "motion/react";
 import DataLoading from "./components/DataLoading";
@@ -12,7 +12,7 @@ import Analysis from "./components/Analysis";
 import LoadingOverlay from "./components/LoadingOverlay";
 import StatusLog, { type LogEntry } from "./components/StatusLog";
 import ChatPanel from "./components/ChatPanel";
-import { StepHero, DataStitchingHeader, pageVariants, horizontalVariants } from "./components/ui";
+import { StepHero, pageVariants, horizontalVariants } from "./components/ui";
 import DataPreviewOverlay from "./components/DataPreviewOverlay";
 import { useTheme } from "./components/ThemeProvider";
 import NormDashboard from "./modules/normalization/NormDashboard";
@@ -26,15 +26,11 @@ type OperationId =
   | "append_plan"
   | "append_mapping"
   | "append_execute"
-  | "merge_setup"
-  | "merge_execute"
   | "analysis_run"
   | "procurement_mapping"
   | "append_datasets"
-  | "merge_datasets"
   | "header_normalize"
-  | "append"
-  | "merge";
+  | "append";
 
 function jsonSafeStringify(value: unknown): string {
   return JSON.stringify(value, (_key, currentValue) => {
@@ -128,14 +124,18 @@ export default function App() {
   // Step 5: Data Cleaning (per-table)
   const [cleaningConfigs, setCleaningConfigs] = useState<Record<string, any>>({});
 
-  // Step 6: Merge Configuration (setup + keys + columns)
-  const [mainGroupId, setMainGroupId] = useState<string>("");
-  const [dimensionGroupIds, setDimensionGroupIds] = useState<string[]>([]);
-  const [mergeKeys, setMergeKeys] = useState<any[]>([]);
-  const [dimColumnsToAdd, setDimColumnsToAdd] = useState<Record<string, string[]>>({});
-
-  // Step 7: Results
+  // Step 6-7: Guided Merge
+  const [mergeBaseGroupId, setMergeBaseGroupId] = useState<string>("");
+  const [mergeBaseRecommendation, setMergeBaseRecommendation] = useState<any>(null);
+  const [mergeSourceGroupIds, setMergeSourceGroupIds] = useState<string[]>([]);
+  const [mergeCurrentSourceIdx, setMergeCurrentSourceIdx] = useState(0);
+  const [mergeCommonColumns, setMergeCommonColumns] = useState<any[]>([]);
+  const [mergeSelectedKeys, setMergeSelectedKeys] = useState<Array<{base_col: string; source_col: string}>>([]);
+  const [mergePullColumns, setMergePullColumns] = useState<string[]>([]);
+  const [mergeSimulation, setMergeSimulation] = useState<any>(null);
+  const [mergeValidationReport, setMergeValidationReport] = useState<any>(null);
   const [mergeResult, setMergeResult] = useState<any>(null);
+  const [mergeApprovedSources, setMergeApprovedSources] = useState<any[]>([]);
 
   // Step 8: Analysis
   const [analysisResults, setAnalysisResults] = useState<any | null>(null);
@@ -155,10 +155,6 @@ export default function App() {
   const [groupReports, setGroupReports] = useState<any[]>([]);
   const [crossGroupOverview, setCrossGroupOverview] = useState<any | null>(null);
   const [groupInsightsLoading, setGroupInsightsLoading] = useState(false);
-
-  // Merge Compatibility (step 5)
-  const [mergeCompatibility, setMergeCompatibility] = useState<any[] | null>(null);
-  const [compatibilityLoading, setCompatibilityLoading] = useState(false);
 
   // Chat
   const [chatOpen, setChatOpen] = useState(false);
@@ -225,37 +221,6 @@ export default function App() {
     }
   }, [sessionId]);
 
-  const compatAbortRef = useRef<AbortController | null>(null);
-
-  const handleMergeCompatibility = useCallback(async () => {
-    if (!apiKey?.trim() || !mainGroupId || dimensionGroupIds.length === 0) return;
-    compatAbortRef.current?.abort();
-    const controller = new AbortController();
-    compatAbortRef.current = controller;
-    setCompatibilityLoading(true);
-    setMergeCompatibility(null);
-    try {
-      const res = await fetch("/api/merge-compatibility", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, mainGroupId, dimensionGroupIds, apiKey }),
-        signal: controller.signal,
-      });
-      if (!res.ok) throw new Error((await res.json()).error || "Failed to fetch compatibility analysis");
-      const data = await res.json();
-      setMergeCompatibility(data.results || []);
-      const mergeCount = (data.results || []).filter((r: any) => r.action === "merge").length;
-      addLog("Compatibility", "success", `Analyzed ${(data.results || []).length} dimension(s), ${mergeCount} recommended for merge`);
-    } catch (err: any) {
-      if (err.name === "AbortError") return;
-      console.error("Merge compatibility error:", err);
-      addLog("Compatibility", "error", err.message);
-    } finally {
-      setCompatibilityLoading(false);
-      if (compatAbortRef.current === controller) compatAbortRef.current = null;
-    }
-  }, [sessionId, apiKey, mainGroupId, dimensionGroupIds, addLog]);
-
   const STORAGE_KEY = "datastitcher_session";
   const APIKEY_STORAGE_KEY = "datastitcher_apikey";
 
@@ -286,8 +251,6 @@ export default function App() {
       if (s.step) { setStep(s.step); setMaxStepReached(s.maxStepReached || s.step); }
       if (s.excludedTables) setExcludedTables(s.excludedTables);
       if (s.cleaningConfigs) setCleaningConfigs(s.cleaningConfigs);
-      if (s.dimColumnsToAdd) setDimColumnsToAdd(s.dimColumnsToAdd);
-      if (s.dimensionGroupIds) setDimensionGroupIds(s.dimensionGroupIds);
       if (s.possibleViews) setPossibleViews(s.possibleViews);
 
       const sid = s.sessionId;
@@ -339,10 +302,8 @@ export default function App() {
         headerNormDecisions, headerNormStandardFields,
         appendGroups, unassigned, excludedTables,
         appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
-        mergeCompatibility,
         analysisResults,
-        mainGroupId, dimensionGroupIds,
-        mergeKeys, dimColumnsToAdd,
+        mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources,
         mergeResult: mergeResult ? { ...mergeResult, csv: undefined } : null,
         procurementMappings, standardFields, viewCategories, viewRequirements,
         possibleViews,
@@ -357,10 +318,8 @@ export default function App() {
     headerNormDecisions, headerNormStandardFields,
     appendGroups, unassigned, excludedTables,
     appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
-    mergeCompatibility,
     analysisResults,
-    mainGroupId, dimensionGroupIds,
-    mergeKeys, dimColumnsToAdd, mergeResult,
+    mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources, mergeResult,
     procurementMappings, standardFields, viewCategories, viewRequirements,
     possibleViews,
   ]);
@@ -392,8 +351,8 @@ export default function App() {
     if (patch.unassigned) setUnassigned(patch.unassigned);
     if (patch.groupSchema) setGroupSchema(patch.groupSchema);
     if (!patch.groupSchema && patch.groupSchemaTableRows) setGroupSchema(patch.groupSchemaTableRows);
-    if (patch.mergeKeys) setMergeKeys(patch.mergeKeys);
-    if (patch.mainGroupId) setMainGroupId(patch.mainGroupId);
+    if (patch.mergeBaseGroupId) setMergeBaseGroupId(patch.mergeBaseGroupId);
+    if (patch.mergeApprovedSources) setMergeApprovedSources(patch.mergeApprovedSources);
     if (patch.mergeResult) setMergeResult(patch.mergeResult);
     if (patch.analysisResults) setAnalysisResults(patch.analysisResults);
     // date state removed - procurement analysis replaces it
@@ -627,20 +586,7 @@ export default function App() {
   const fetchResultsPreviews = async () => {
     if (!sessionId) return;
     try {
-      if (mergeResult) {
-        const res = await fetch("/api/group-preview", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId, groupIds: ["final_merged"] }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.final_merged) {
-            setResultsPreviews({ final_merged: { columns: data.final_merged.columns, rows: data.final_merged.rows } });
-            setResultsInventory([{ table_key: "final_merged", rows: data.final_merged.total_rows || data.final_merged.rows.length, cols: data.final_merged.columns.length }]);
-          }
-        }
-      } else if (groupSchema.length > 0) {
+      if (groupSchema.length > 0) {
         const groupIds = groupSchema.map((g: any) => g.group_id);
         let data: any = null;
 
@@ -795,10 +741,9 @@ export default function App() {
       setHeaderNormStandardFields([]);
       setGroupPreviewData({});
       setCleaningConfigs({});
-      setMainGroupId("");
-      setDimensionGroupIds([]);
-      setMergeKeys([]);
-      setDimColumnsToAdd({});
+      setMergeBaseGroupId("");
+      setMergeSourceGroupIds([]);
+      setMergeApprovedSources([]);
       setMergeResult(null);
       setGroupInsights({});
       setGroupReports([]);
@@ -961,10 +906,6 @@ export default function App() {
       setHeaderNormStandardFields([]);
       setGroupPreviewData({});
       setCleaningConfigs({});
-      if (data.groupSchema.length > 0) {
-        setMainGroupId(data.groupSchema[0].group_id);
-        setDimensionGroupIds(data.groupSchema.slice(1).map((g: any) => g.group_id));
-      }
       addLog("Append Execute", "success", `Appended into ${(data.groupSchema || []).length} group(s)`);
     } catch (err: any) {
       setError(err.message);
@@ -978,190 +919,6 @@ export default function App() {
   const handleProceedToHeaderNorm = useCallback(() => {
     setStep(4);
   }, []);
-
-  const handleSetMainGroupId = useCallback((id: string) => {
-    setMainGroupId(id);
-    setDimensionGroupIds(prev => prev.filter(d => d !== id));
-    setMergeKeys([]);
-    setDimColumnsToAdd({});
-  }, []);
-
-  const handleSetDimensionGroupIds = useCallback((ids: string[]) => {
-    setDimensionGroupIds(ids);
-    setMergeKeys([]);
-    setDimColumnsToAdd({});
-  }, []);
-
-  const handleMergeSetup = async () => {
-    if (!apiKey?.trim()) {
-      setError("Please enter your API key to use AI features.");
-      return;
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    setLoading(true);
-    setAiLoading(true);
-    setLoadingMessage("AI is discovering the best join keys between your tables...");
-    setError(null);
-    addLog("Merge Setup", "info", "Discovering join keys between tables...");
-    try {
-      if (controller.signal.aborted) throw new DOMException("Request cancelled.", "AbortError");
-      const exec = await runOperation(
-        "merge_setup",
-        { mainGroupId, dimensionGroupIds, enhanced_merge: true },
-        { mode: "pipeline", autoPrepare: true, persist: true },
-      );
-      const data = exec?.result || {};
-      setMergeKeys(data.mergeKeys);
-      
-      const initialDimCols: Record<string, string[]> = {};
-      for (const key of data.mergeKeys) {
-        if (key.status === "proposed" || key.status === "review_needed") {
-          if (key.suggested_dim_columns?.length > 0) {
-            initialDimCols[key.dimension_group] = key.suggested_dim_columns;
-          } else {
-            const dimGroup = groupSchema.find(g => g.group_id === key.dimension_group);
-            if (dimGroup) {
-              const allKeysCols = new Set([key.dim_key, ...(key.extra_keys || []).map((ek: any) => ek.dim_key)]);
-              initialDimCols[key.dimension_group] = dimGroup.columns.filter((c: string) => !allKeysCols.has(c));
-            }
-          }
-        }
-      }
-      setDimColumnsToAdd(initialDimCols);
-      
-      const proposed = (data.mergeKeys || []).filter((k: any) => k.status === "proposed").length;
-      addLog("Merge Setup", "success", `Found ${proposed} proposed merge key(s)`);
-    } catch (err: any) {
-      const message = err?.name === "AbortError" ? "Request cancelled. Please try again." : err.message;
-      setError(message);
-      addLog("Merge Setup", "error", message);
-      setLastFailedAction(() => handleMergeSetup);
-    } finally {
-      abortControllerRef.current = null;
-      setLoading(false);
-      setAiLoading(false);
-    }
-  };
-
-  const handleMergeExecute = async () => {
-    setLoading(true);
-    setLoadingMessage("Performing high-performance joins to create your flat file...");
-    setError(null);
-    addLog("Run Merge", "info", "Performing joins to create flat file...");
-    try {
-      const exec = await runOperation(
-        "merge_execute",
-        { mainGroupId, mergePlan: mergeKeys, dimColumnsToAdd },
-        { mode: "pipeline", autoPrepare: true, persist: true },
-      );
-      const data = exec?.result || {};
-      setMergeResult(data);
-      const rows = data.report?.final_shape?.rows ?? 0;
-      const cols = data.report?.final_shape?.cols ?? 0;
-      addLog("Run Merge", "success", `Final flat file: ${rows} rows × ${cols} columns`);
-      setStep(7);
-    } catch (err: any) {
-      setError(err.message);
-      addLog("Run Merge", "error", err.message);
-      setLastFailedAction(() => handleMergeExecute);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSkipMerge = async () => {
-    if (groupSchema.length === 0) return;
-    const mainId = mainGroupId || groupSchema[0].group_id;
-    setLoading(true);
-    setLoadingMessage("Using single table as final file...");
-    setError(null);
-    addLog("Merge", "info", "Skipping merge — using single table as final file.");
-    try {
-      const exec = await runOperation(
-        "merge_execute",
-        { mainGroupId: mainId, mergePlan: [], dimColumnsToAdd: {} },
-        { mode: "pipeline", autoPrepare: true, persist: true },
-      );
-      const data = exec?.result || {};
-      setMergeResult(data);
-      const rows = data.report?.final_shape?.rows ?? 0;
-      const cols = data.report?.final_shape?.cols ?? 0;
-      addLog("Merge", "success", `Final file: ${rows} rows × ${cols} columns (no merge)`);
-      setStep(7);
-    } catch (err: any) {
-      setError(err.message);
-      addLog("Merge", "error", err.message);
-      setLastFailedAction(() => handleSkipMerge);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchMergedCsv = useCallback(async (): Promise<string> => {
-    const res = await fetch(`/api/download-csv?sessionId=${encodeURIComponent(sessionId)}`);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: "Failed to download CSV." }));
-      throw new Error(err.error || "Failed to download CSV.");
-    }
-    return await res.text();
-  }, [sessionId]);
-
-  const downloadCsv = async () => {
-    try {
-      const csv = mergeResult?.csv || await fetchMergedCsv();
-      if (!mergeResult?.csv) {
-        setMergeResult((prev: any) => ({ ...(prev || {}), csv }));
-      }
-      const blob = new Blob([csv], { type: "text/csv" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "final_flat.csv";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (err: any) {
-      setError(err.message || "Failed to download CSV.");
-      addLog("Download", "error", err.message || "CSV download failed");
-    }
-  };
-
-  const handleSendToNormalization = useCallback(async () => {
-    if (!mergeResult) return;
-    try {
-      const csv = mergeResult?.csv || await fetchMergedCsv();
-      if (!mergeResult?.csv) {
-        setMergeResult((prev: any) => ({ ...(prev || {}), csv }));
-      }
-      setImportedCsvForNorm(csv || null);
-      setActiveModule("normalization");
-    } catch (err: any) {
-      setError(err.message || "Failed to load merged CSV.");
-      addLog("Normalization", "error", err.message || "Failed to load merged CSV");
-    }
-  }, [mergeResult, fetchMergedCsv, addLog]);
-
-  const downloadReport = () => {
-    try {
-      if (!mergeResult?.report) return;
-      const blob = new Blob([JSON.stringify(mergeResult.report, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "stitch_report.json";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (err: any) {
-      setError(err.message || "Failed to download report.");
-      addLog("Download", "error", err.message || "Report download failed");
-    }
-  };
-
-  // analysisAbortRef removed - no longer needed for procurement analysis
 
   const handleRunAnalysis = useCallback(async () => {
     if (!apiKey?.trim()) return;
@@ -1271,7 +1028,6 @@ export default function App() {
   const modularOperations: Array<{ id: OperationId; label: string; description: string; requiresApi: boolean; supportsTableSelection?: boolean }> = [
     { id: "header_normalize", label: "Header Normalisation", description: "AI normalises column headers across selected tables", requiresApi: true, supportsTableSelection: true },
     { id: "append", label: "Append Strategy", description: "AI groups, aligns headers, and appends selected tables", requiresApi: true, supportsTableSelection: true },
-    { id: "merge", label: "Merge", description: "AI identifies join keys and merges appended groups", requiresApi: true },
     { id: "analysis_run", label: "Analysis", description: "AI analyses the final merged dataset", requiresApi: true },
   ];
 
@@ -1310,7 +1066,7 @@ export default function App() {
     }
   };
 
-  const AI_STEPS = new Set([3, 4, 8, 9]);
+  const AI_STEPS = new Set([3, 4, 6, 8, 9]);
 
   const sidebarItems = [
     { name: "Upload + Settings",     steps: [1],      sub: "Manual" },
@@ -1325,7 +1081,7 @@ export default function App() {
   ];
 
   const getDisplayStep = (s: number) => s <= 5 ? s : s <= 7 ? 6 : s - 1;
-  const animationKey = step >= 6 && step <= 7 ? "merge" : step;
+  const animationKey = step;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-50 via-white to-neutral-100 dark:from-neutral-950 dark:via-neutral-900 dark:to-neutral-950 text-neutral-900 dark:text-neutral-100 font-sans flex relative overflow-hidden">
@@ -1482,17 +1238,6 @@ export default function App() {
               </div>
             ))}
           </nav>
-          {mergeResult && (
-            <button
-              onClick={() => {
-                void handleSendToNormalization();
-              }}
-              className="mt-4 w-full flex items-center gap-2 px-3 py-2.5 rounded-2xl text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-950/40 transition-colors"
-            >
-              <ArrowLeftRight className="w-4 h-4" />
-              Import Merged Data
-            </button>
-          )}
           </>
           )}
         </div>
@@ -1684,7 +1429,7 @@ export default function App() {
                   <Table2 className="w-4 h-4" />
                 </motion.button>
               )}
-              {(groupSchema.length > 0 || mergeResult) && (
+              {groupSchema.length > 0 && (
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
@@ -1716,11 +1461,7 @@ export default function App() {
               </motion.button>
             </div>
 
-            {step >= 6 && step <= 7 ? (
-              <DataStitchingHeader step={step} maxStepReached={maxStepReached} setStep={setStep} />
-            ) : (
-              <StepHero step={step} displayStep={getDisplayStep(step)} isAi={AI_STEPS.has(step)} totalSteps={9} />
-            )}
+            <StepHero step={step} displayStep={getDisplayStep(step)} isAi={AI_STEPS.has(step)} totalSteps={9} />
 
             {error && (
               <motion.div
@@ -1836,33 +1577,41 @@ export default function App() {
                     >
                       <Merging
                         sessionId={sessionId}
+                        apiKey={apiKey}
                         step={step}
+                        setStep={setStep}
                         groupSchema={groupSchema}
                         groupNameMap={groupNameMap}
-                        mainGroupId={mainGroupId}
-                        setMainGroupId={handleSetMainGroupId}
-                        dimensionGroupIds={dimensionGroupIds}
-                        setDimensionGroupIds={handleSetDimensionGroupIds}
-                        mergeKeys={mergeKeys}
-                        setMergeKeys={setMergeKeys}
-                        dimColumnsToAdd={dimColumnsToAdd}
-                        setDimColumnsToAdd={setDimColumnsToAdd}
-                        mergeResult={mergeResult}
                         loading={loading}
-                        handleMergeSetup={handleMergeSetup}
-                        handleMergeExecute={handleMergeExecute}
-                        handleSkipMerge={handleSkipMerge}
-                        downloadCsv={downloadCsv}
-                        downloadReport={downloadReport}
-                        handleGenerateProcurementMapping={handleGenerateProcurementMapping}
+                        setLoading={setLoading}
+                        setAiLoading={setAiLoading}
+                        setLoadingMessage={setLoadingMessage}
+                        setError={setError}
+                        addLog={addLog}
+                        mergeBaseGroupId={mergeBaseGroupId}
+                        setMergeBaseGroupId={setMergeBaseGroupId}
+                        mergeBaseRecommendation={mergeBaseRecommendation}
+                        setMergeBaseRecommendation={setMergeBaseRecommendation}
+                        mergeSourceGroupIds={mergeSourceGroupIds}
+                        setMergeSourceGroupIds={setMergeSourceGroupIds}
+                        mergeCurrentSourceIdx={mergeCurrentSourceIdx}
+                        setMergeCurrentSourceIdx={setMergeCurrentSourceIdx}
+                        mergeCommonColumns={mergeCommonColumns}
+                        setMergeCommonColumns={setMergeCommonColumns}
+                        mergeSelectedKeys={mergeSelectedKeys}
+                        setMergeSelectedKeys={setMergeSelectedKeys}
+                        mergePullColumns={mergePullColumns}
+                        setMergePullColumns={setMergePullColumns}
+                        mergeSimulation={mergeSimulation}
+                        setMergeSimulation={setMergeSimulation}
+                        mergeValidationReport={mergeValidationReport}
+                        setMergeValidationReport={setMergeValidationReport}
+                        mergeResult={mergeResult}
+                        setMergeResult={setMergeResult}
+                        mergeApprovedSources={mergeApprovedSources}
+                        setMergeApprovedSources={setMergeApprovedSources}
                         onProceedToAnalysis={() => setStep(8)}
-                        onSendToNormalization={() => {
-                          void handleSendToNormalization();
-                        }}
-                        onSelectChatItem={onSelectChatItem}
-                        mergeCompatibility={mergeCompatibility}
-                        compatibilityLoading={compatibilityLoading}
-                        handleMergeCompatibility={handleMergeCompatibility}
+                        handleGenerateProcurementMapping={handleGenerateProcurementMapping}
                       />
                     </motion.div>
                   </AnimatePresence>

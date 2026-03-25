@@ -36,6 +36,14 @@ from data_loading.service import (
 data_loading_bp = Blueprint("data_loading", __name__)
 
 
+def _rebuild_meta(conn, skip_distinct: bool = False):
+    """Build inv, filesPayload, and previews."""
+    inv = build_inventory_from_db(conn)
+    files_payload = build_files_payload_from_db(conn, skip_distinct=True) if skip_distinct else build_files_payload_from_db(conn)
+    previews = build_previews_from_db(conn)
+    return inv, files_payload, previews
+
+
 @data_loading_bp.route("/upload", methods=["POST"])
 def upload():
     try:
@@ -49,10 +57,7 @@ def upload():
 
         _raw_arrays, warnings = load_zip_to_session(conn, file_data)
 
-        inv = build_inventory_from_db(conn)
-        files_payload = build_files_payload_from_db(conn, skip_distinct=True)
-        previews = build_previews_from_db(conn)
-
+        inv, files_payload, previews = _rebuild_meta(conn, skip_distinct=True)
         set_meta(conn, "inv", inv)
         set_meta(conn, "filesPayload", files_payload)
 
@@ -86,9 +91,7 @@ def delete_table_route():
         conn.execute("DELETE FROM table_registry WHERE table_key = ?", (table_key,))
         conn.commit()
 
-        inv = build_inventory_from_db(conn)
-        files_payload = build_files_payload_from_db(conn)
-        previews = build_previews_from_db(conn)
+        inv, files_payload, previews = _rebuild_meta(conn)
         set_meta(conn, "inv", inv)
         set_meta(conn, "filesPayload", files_payload)
 
@@ -137,9 +140,7 @@ def set_header_row():
             store_table(conn, tbl_name, cleaned)
             register_table(conn, table_key, tbl_name)
 
-        inv = build_inventory_from_db(conn)
-        files_payload = build_files_payload_from_db(conn)
-        previews = build_previews_from_db(conn)
+        inv, files_payload, previews = _rebuild_meta(conn)
         set_meta(conn, "inv", inv)
         set_meta(conn, "filesPayload", files_payload)
 

@@ -32,8 +32,6 @@ from data_loading.service import (
     build_files_payload_from_db,
     build_inventory_from_db,
 )
-from merging.service import run_merge_execute, run_merge_setup
-
 summary_bp = Blueprint("summary_bp", __name__)
 
 _module_dir = os.path.dirname(os.path.abspath(__file__))
@@ -102,8 +100,8 @@ def _build_chat_context(conn, body: dict) -> str:
         "inv",
         "appendGroups",
         "groupSchemaTableRows",
-        "mergeKeys",
-        "mergeExecLog",
+        "mergeBaseGroupId",
+        "mergeApprovedSources",
         "normalizeExport",
     ]
     meta_summary: dict[str, object] = {}
@@ -304,53 +302,39 @@ _OPERATION_SPECS: dict[str, dict[str, Any]] = {
         "auto_prereqs": ["append_mapping"],
         "produces": ["groupSchemaTableRows"],
     },
-    "merge_setup": {
-        "required_inputs": [],
-        "required_artifacts": ["groupSchemaTableRows"],
-        "requires_api_key": True,
-        "auto_prereqs": ["append_execute"],
-        "produces": ["mergeKeys"],
-    },
-    "merge_execute": {
-        "required_inputs": [],
-        "required_artifacts": [],
-        "requires_api_key": False,
-        "auto_prereqs": ["merge_setup"],
-        "produces": ["table:final_merged"],
-    },
     "analysis_run": {
         "required_inputs": [],
         "required_artifacts": ["table:final_merged"],
         "requires_api_key": True,
-        "auto_prereqs": ["merge_execute"],
+        "auto_prereqs": [],
         "produces": ["analysisLast"],
     },
     "date_detect": {
         "required_inputs": [],
         "required_artifacts": ["table:final_merged"],
         "requires_api_key": False,
-        "auto_prereqs": ["merge_execute"],
+        "auto_prereqs": [],
         "produces": ["dateDetectLast"],
     },
     "date_analyze": {
         "required_inputs": ["columns"],
         "required_artifacts": ["table:final_merged"],
         "requires_api_key": False,
-        "auto_prereqs": ["merge_execute"],
+        "auto_prereqs": [],
         "produces": ["dateAnalyzeLast"],
     },
     "date_standardize": {
         "required_inputs": ["columns"],
         "required_artifacts": ["table:final_merged"],
         "requires_api_key": False,
-        "auto_prereqs": ["merge_execute"],
+        "auto_prereqs": [],
         "produces": ["dateStandardizeLast"],
     },
     "procurement_mapping": {
         "required_inputs": [],
         "required_artifacts": ["table:final_merged"],
         "requires_api_key": True,
-        "auto_prereqs": ["merge_execute"],
+        "auto_prereqs": [],
         "produces": ["procMappings"],
     },
     "append_datasets": {
@@ -359,13 +343,6 @@ _OPERATION_SPECS: dict[str, dict[str, Any]] = {
         "requires_api_key": True,
         "auto_prereqs": [],
         "produces": ["groupSchemaTableRows"],
-    },
-    "merge_datasets": {
-        "required_inputs": ["mainGroupId", "dimensionGroupIds"],
-        "required_artifacts": [],
-        "requires_api_key": True,
-        "auto_prereqs": ["append_execute"],
-        "produces": ["table:final_merged"],
     },
     "header_normalize": {
         "required_inputs": [],
@@ -380,13 +357,6 @@ _OPERATION_SPECS: dict[str, dict[str, Any]] = {
         "requires_api_key": True,
         "auto_prereqs": [],
         "produces": ["groupSchemaTableRows"],
-    },
-    "merge": {
-        "required_inputs": [],
-        "required_artifacts": ["groupSchemaTableRows"],
-        "requires_api_key": True,
-        "auto_prereqs": [],
-        "produces": ["table:final_merged"],
     },
 }
 
@@ -405,16 +375,6 @@ _OPERATION_INPUT_HINTS: dict[str, dict[str, Any]] = {
     "append_execute": {
         "appendGroupMappings": {"type": "array", "required": False, "description": "Group mappings to execute."},
         "unassignedTables": {"type": "array", "required": False, "description": "Optional excluded table keys."},
-    },
-    "merge_setup": {
-        "mainGroupId": {"type": "string", "required": False, "description": "Fact/main group id."},
-        "dimensionGroupIds": {"type": "array", "required": False, "description": "Dimension group ids."},
-    },
-    "merge_execute": {
-        "mainGroupId": {"type": "string", "required": False, "description": "Fact/main group id."},
-        "mergePlan": {"type": "array", "required": False, "description": "Merge plan; mergeKeys also accepted."},
-        "mergeKeys": {"type": "array", "required": False, "description": "Alias for mergePlan."},
-        "dimColumnsToAdd": {"type": "object", "required": False, "description": "Per-dimension selected columns."},
     },
     "analysis_run": {
         "columns": {"type": "array", "required": False, "description": "Optional subset of columns for analysis."},
@@ -436,20 +396,11 @@ _OPERATION_INPUT_HINTS: dict[str, dict[str, Any]] = {
         "tableKeys": {"type": "array", "required": True, "description": "Table keys to append directly."},
         "groupId": {"type": "string", "required": False, "description": "Optional output group id."},
     },
-    "merge_datasets": {
-        "mainGroupId": {"type": "string", "required": True, "description": "Fact/main group id."},
-        "dimensionGroupIds": {"type": "array", "required": True, "description": "Dimension group ids."},
-        "dimColumnsToAdd": {"type": "object", "required": False, "description": "Per-dimension selected columns."},
-    },
     "header_normalize": {
         "tableKeys": {"type": "array", "required": False, "description": "Optional table keys to scope normalization."},
     },
     "append": {
         "tableKeys": {"type": "array", "required": False, "description": "Optional table keys to scope append planning."},
-    },
-    "merge": {
-        "mainGroupId": {"type": "string", "required": False, "description": "Fact/main group id (auto-detected if omitted)."},
-        "dimensionGroupIds": {"type": "array", "required": False, "description": "Dimension group ids (auto-detected if omitted)."},
     },
 }
 
@@ -565,44 +516,6 @@ def _execute_operation(conn, session_id: str, operation: str, input_data: dict[s
             ]
         return run_append_execute(conn, mappings, unassigned)
 
-    if operation == "merge_setup":
-        schema = get_meta(conn, "groupSchemaTableRows") or []
-        by_rows = sorted(schema, key=lambda x: int(x.get("rows") or 0), reverse=True)
-        main_gid = input_data.get("mainGroupId") or (str(by_rows[0].get("group_id")) if by_rows else None)
-        dim_gids = input_data.get("dimensionGroupIds")
-        if dim_gids is None:
-            dim_gids = [str(r.get("group_id")) for r in by_rows[1:] if r.get("group_id")]
-        result = run_merge_setup(conn, session_id, api_key, main_gid, dim_gids)
-        if result.get("error"):
-            raise ValueError(str(result.get("error")))
-        return result
-
-    if operation == "merge_execute":
-        schema = get_meta(conn, "groupSchemaTableRows") or []
-        by_rows = sorted(schema, key=lambda x: int(x.get("rows") or 0), reverse=True)
-        main_gid = input_data.get("mainGroupId") or get_meta(conn, "mergeMainGroupId")
-        if not main_gid and by_rows:
-            main_gid = str(by_rows[0].get("group_id"))
-        merge_plan = input_data.get("mergePlan") or input_data.get("mergeKeys")
-        if merge_plan is None:
-            merge_plan = get_meta(conn, "mergeKeys") or []
-        dim_cols = input_data.get("dimColumnsToAdd") or {}
-        result = run_merge_execute(
-            conn,
-            session_id,
-            merge_plan,
-            api_key,
-            main_group_id=main_gid,
-            dim_columns_to_add=dim_cols,
-        )
-        if result.get("error"):
-            raise ValueError(str(result.get("error")))
-        merged = _build_merge_result_from_table(conn, str(result.get("final_table") or "final_merged"))
-        if merged:
-            result["report"] = merged["report"]
-            result["preview"] = merged["preview"]
-        return result
-
     if operation == "analysis_run":
         columns = input_data.get("columns") or []
         if not isinstance(columns, list):
@@ -655,30 +568,6 @@ def _execute_operation(conn, session_id: str, operation: str, input_data: dict[s
         executed = run_append_execute(conn, mapping.get("appendGroupMappings") or [], [])
         return {"appendGroups": append_groups, "appendGroupMappings": mapping.get("appendGroupMappings"), **executed}
 
-    if operation == "merge_datasets":
-        main_gid = str(input_data.get("mainGroupId") or "")
-        dim_gids = [str(d) for d in (input_data.get("dimensionGroupIds") or []) if str(d).strip()]
-        if not main_gid or not dim_gids:
-            raise ValueError("mainGroupId and dimensionGroupIds are required.")
-        setup = run_merge_setup(conn, session_id, api_key, main_gid, dim_gids)
-        if setup.get("error"):
-            raise ValueError(str(setup.get("error")))
-        result = run_merge_execute(
-            conn,
-            session_id,
-            setup.get("mergeKeys") or [],
-            api_key,
-            main_group_id=main_gid,
-            dim_columns_to_add=input_data.get("dimColumnsToAdd") or {},
-        )
-        if result.get("error"):
-            raise ValueError(str(result.get("error")))
-        merged = _build_merge_result_from_table(conn, str(result.get("final_table") or "final_merged"))
-        if merged:
-            result["report"] = merged["report"]
-            result["preview"] = merged["preview"]
-        return {"mergeSetup": setup, **result}
-
     if operation == "header_normalize":
         norm_result = run_header_norm(conn, api_key)
         decisions = _auto_header_norm_decisions(conn)
@@ -698,29 +587,6 @@ def _execute_operation(conn, session_id: str, operation: str, input_data: dict[s
         executed = run_append_execute(conn, mapping.get("appendGroupMappings") or [], [])
         return {**plan_result, "appendGroupMappings": mapping.get("appendGroupMappings"), **executed}
 
-    if operation == "merge":
-        schema = get_meta(conn, "groupSchemaTableRows") or []
-        by_rows = sorted(schema, key=lambda x: int(x.get("rows") or 0), reverse=True)
-        main_gid = input_data.get("mainGroupId") or (str(by_rows[0].get("group_id")) if by_rows else None)
-        dim_gids = input_data.get("dimensionGroupIds")
-        if dim_gids is None:
-            dim_gids = [str(r.get("group_id")) for r in by_rows[1:] if r.get("group_id")]
-        setup = run_merge_setup(conn, session_id, api_key, main_gid, dim_gids)
-        if setup.get("error"):
-            raise ValueError(str(setup.get("error")))
-        result = run_merge_execute(
-            conn, session_id, setup.get("mergeKeys") or [], api_key,
-            main_group_id=main_gid,
-            dim_columns_to_add=input_data.get("dimColumnsToAdd") or {},
-        )
-        if result.get("error"):
-            raise ValueError(str(result.get("error")))
-        merged = _build_merge_result_from_table(conn, str(result.get("final_table") or "final_merged"))
-        if merged:
-            result["report"] = merged["report"]
-            result["preview"] = merged["preview"]
-        return {"mergeSetup": setup, **result}
-
     raise ValueError(f"Unsupported operation: {operation}")
 
 
@@ -735,9 +601,8 @@ def _build_state_patch(conn) -> dict[str, Any]:
         "unassigned": get_meta(conn, "unassigned") or [],
         "groupSchema": get_meta(conn, "groupSchemaTableRows") or [],
         "groupSchemaTableRows": get_meta(conn, "groupSchemaTableRows") or [],
-        "mergeKeys": get_meta(conn, "mergeKeys") or [],
-        "mergeExecLog": get_meta(conn, "mergeExecLog") or [],
-        "mainGroupId": get_meta(conn, "mergeMainGroupId"),
+        "mergeBaseGroupId": get_meta(conn, "mergeBaseGroupId") or "",
+        "mergeApprovedSources": get_meta(conn, "mergeApprovedSources") or [],
         "analysisResults": get_meta(conn, "analysisLast"),
         "dateDetectResult": get_meta(conn, "dateDetectLast"),
         "dateAnalyzeResult": get_meta(conn, "dateAnalyzeLast"),
@@ -767,8 +632,8 @@ def _build_artifact_summary(conn) -> dict[str, Any]:
             "appendGroups": bool(get_meta(conn, "appendGroups")),
             "appendGroupMappings": bool(get_meta(conn, "appendGroupMappings")),
             "groupSchemaTableRows": bool(get_meta(conn, "groupSchemaTableRows")),
-            "mergeKeys": bool(get_meta(conn, "mergeKeys")),
-            "mergeExecLog": bool(get_meta(conn, "mergeExecLog")),
+            "mergeBaseGroupId": bool(get_meta(conn, "mergeBaseGroupId")),
+            "mergeApprovedSources": bool(get_meta(conn, "mergeApprovedSources")),
             "analysisLast": bool(get_meta(conn, "analysisLast")),
             "procMappings": bool(get_meta(conn, "procMappings")),
         },

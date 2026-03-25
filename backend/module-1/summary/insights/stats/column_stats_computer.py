@@ -32,11 +32,7 @@ def _infer_type(numeric_ratio: float, distinct_count: int, non_null: int) -> str
 def compute_deep_column_stats(
     conn: sqlite3.Connection, table_name: str
 ) -> list[dict[str, Any]]:
-    """
-    Per-column: fill_rate, distinct_count, top_values (top 10),
-    numeric min/max/mean/median/stddev when numeric-like,
-    length stats, case-pattern flags.
-    """
+    """Per-column deep stats using consolidated SQL queries for speed."""
     if not table_exists(conn, table_name):
         return []
 
@@ -59,50 +55,16 @@ def compute_deep_column_stats(
         uniqueness = distinct_count / non_null if non_null else 0.0
 
         num_pred = _numeric_predicate(qc)
-        ratio_row = conn.execute(
-            f"""SELECT
-                CAST(COUNT(CASE WHEN {num_pred} AND {qc} IS NOT NULL
-                    AND TRIM(CAST({qc} AS TEXT)) != '' THEN 1 END) AS REAL)
-                / MAX(COUNT(CASE WHEN {qc} IS NOT NULL
-                    AND TRIM(CAST({qc} AS TEXT)) != '' THEN 1 END), 1) AS numeric_ratio
-            FROM {tbl}"""
-        ).fetchone()
-        numeric_ratio = float(ratio_row["numeric_ratio"] or 0) if ratio_row else 0.0
-        inferred_type = _infer_type(numeric_ratio, distinct_count, non_null)
+        nn_filter = f"{qc} IS NOT NULL AND TRIM(CAST({qc} AS TEXT)) != ''"
 
-        top_rows = conn.execute(
-            f"""SELECT CAST({qc} AS TEXT) AS v, COUNT(*) AS cnt
-            FROM {tbl}
-            WHERE {qc} IS NOT NULL AND TRIM(CAST({qc} AS TEXT)) != ''
-            GROUP BY CAST({qc} AS TEXT)
-            ORDER BY cnt DESC
-            LIMIT 10"""
-        ).fetchall()
-        top_values = [
-            {
-                "value": str(r["v"]),
-                "count": int(r["cnt"]),
-                "pct": int(r["cnt"]) / total_rows if total_rows else 0.0,
-            }
-            for r in top_rows
-        ]
-
-        len_row = conn.execute(
+        # Consolidated query: numeric_ratio + length_stats + pattern_flags in one scan
+        combo_row = conn.execute(
             f"""SELECT
+                CAST(COUNT(CASE WHEN {num_pred} AND {nn_filter} THEN 1 END) AS REAL)
+                    / MAX(COUNT(CASE WHEN {nn_filter} THEN 1 END), 1) AS numeric_ratio,
                 MIN(LENGTH(CAST({qc} AS TEXT))) AS min_len,
                 MAX(LENGTH(CAST({qc} AS TEXT))) AS max_len,
-                AVG(LENGTH(CAST({qc} AS TEXT))) AS avg_len
-            FROM {tbl}
-            WHERE {qc} IS NOT NULL AND TRIM(CAST({qc} AS TEXT)) != ''"""
-        ).fetchone()
-        length_stats = {
-            "min": int(len_row["min_len"] or 0),
-            "max": int(len_row["max_len"] or 0),
-            "avg": float(len_row["avg_len"] or 0),
-        }
-
-        pattern_row = conn.execute(
-            f"""SELECT
+                AVG(LENGTH(CAST({qc} AS TEXT))) AS avg_len,
                 SUM(CASE WHEN UPPER(TRIM(CAST({qc} AS TEXT))) = TRIM(CAST({qc} AS TEXT))
                     AND LOWER(TRIM(CAST({qc} AS TEXT))) != TRIM(CAST({qc} AS TEXT)) THEN 1 ELSE 0 END) AS n_upper,
                 SUM(CASE WHEN LOWER(TRIM(CAST({qc} AS TEXT))) = TRIM(CAST({qc} AS TEXT))
@@ -110,12 +72,20 @@ def compute_deep_column_stats(
                 SUM(CASE WHEN TRIM(CAST({qc} AS TEXT)) GLOB '*[!0-9A-Za-z ./_-]*' THEN 1 ELSE 0 END) AS n_special,
                 SUM(CASE WHEN TRIM(CAST({qc} AS TEXT)) GLOB '*[0-9]*' THEN 1 ELSE 0 END) AS n_digit
             FROM {tbl}
-            WHERE {qc} IS NOT NULL AND TRIM(CAST({qc} AS TEXT)) != ''"""
+            WHERE {nn_filter}"""
         ).fetchone()
 
+        numeric_ratio = float(combo_row["numeric_ratio"] or 0) if combo_row else 0.0
+        inferred_type = _infer_type(numeric_ratio, distinct_count, non_null)
+        length_stats = {
+            "min": int(combo_row["min_len"] or 0),
+            "max": int(combo_row["max_len"] or 0),
+            "avg": float(combo_row["avg_len"] or 0),
+        } if combo_row else {"min": 0, "max": 0, "avg": 0.0}
+
         pattern_flags: list[str] = []
-        if pattern_row and non_null:
-            nu, nl = int(pattern_row["n_upper"] or 0), int(pattern_row["n_lower"] or 0)
+        if combo_row and non_null:
+            nu, nl = int(combo_row["n_upper"] or 0), int(combo_row["n_lower"] or 0)
             pu, pl = nu / non_null, nl / non_null
             if pu > 0.8:
                 pattern_flags.append("mostly_uppercase")
@@ -123,74 +93,64 @@ def compute_deep_column_stats(
                 pattern_flags.append("mostly_lowercase")
             if pu < 0.8 and pl < 0.8 and (nu + nl) / non_null < 0.9:
                 pattern_flags.append("mixed_case")
-            if int(pattern_row["n_digit"] or 0) / non_null > 0.5:
+            if int(combo_row["n_digit"] or 0) / non_null > 0.5:
                 pattern_flags.append("mostly_numeric_text")
-            if int(pattern_row["n_special"] or 0) / non_null > 0.1:
+            if int(combo_row["n_special"] or 0) / non_null > 0.1:
                 pattern_flags.append("has_special_chars")
+
+        top_rows = conn.execute(
+            f"""SELECT CAST({qc} AS TEXT) AS v, COUNT(*) AS cnt
+            FROM {tbl} WHERE {nn_filter}
+            GROUP BY CAST({qc} AS TEXT) ORDER BY cnt DESC LIMIT 10"""
+        ).fetchall()
+        top_values = [
+            {"value": str(r["v"]), "count": int(r["cnt"]), "pct": int(r["cnt"]) / total_rows if total_rows else 0.0}
+            for r in top_rows
+        ]
 
         numeric_stats: dict[str, float] | None = None
         if inferred_type in ("numeric", "id") and non_null > 0:
+            # Consolidated numeric query: min/max/mean/stddev in one pass
             num_row = conn.execute(
                 f"""SELECT
                     MIN(CAST({qc} AS REAL)) AS min_val,
                     MAX(CAST({qc} AS REAL)) AS max_val,
-                    AVG(CAST({qc} AS REAL)) AS mean_val
+                    AVG(CAST({qc} AS REAL)) AS mean_val,
+                    AVG(CAST({qc} AS REAL) * CAST({qc} AS REAL)) AS avg_sq
                 FROM {tbl}
-                WHERE {qc} IS NOT NULL AND TRIM(CAST({qc} AS TEXT)) != ''
-                  AND {num_pred}
+                WHERE {nn_filter} AND {num_pred}
                   AND CAST({qc} AS REAL) = CAST({qc} AS REAL)"""
             ).fetchone()
             if num_row and num_row["min_val"] is not None:
                 offset = max(0, non_null // 2)
                 med_row = conn.execute(
-                    f"""SELECT CAST({qc} AS REAL) AS v
-                    FROM {tbl}
-                    WHERE {qc} IS NOT NULL AND TRIM(CAST({qc} AS TEXT)) != ''
-                      AND {num_pred}
-                    ORDER BY CAST({qc} AS REAL)
-                    LIMIT 1 OFFSET ?""",
+                    f"""SELECT CAST({qc} AS REAL) AS v FROM {tbl}
+                    WHERE {nn_filter} AND {num_pred}
+                    ORDER BY CAST({qc} AS REAL) LIMIT 1 OFFSET ?""",
                     (offset,),
                 ).fetchone()
-                sd_row = conn.execute(
-                    f"""SELECT
-                        AVG(CAST({qc} AS REAL) * CAST({qc} AS REAL)) AS avg_sq,
-                        AVG(CAST({qc} AS REAL)) AS avg_v
-                    FROM {tbl}
-                    WHERE {qc} IS NOT NULL AND TRIM(CAST({qc} AS TEXT)) != ''
-                      AND {num_pred}"""
-                ).fetchone()
-                avg_sq = float(sd_row["avg_sq"] or 0) if sd_row else 0.0
-                avg_v = float(sd_row["avg_v"] or 0) if sd_row else 0.0
+                avg_v = float(num_row["mean_val"] or 0)
+                avg_sq = float(num_row["avg_sq"] or 0)
                 variance = max(0.0, avg_sq - avg_v * avg_v)
                 numeric_stats = {
                     "min": float(num_row["min_val"]),
                     "max": float(num_row["max_val"]),
-                    "mean": float(num_row["mean_val"] or 0),
-                    "median": float(med_row["v"])
-                    if med_row and med_row["v"] is not None
-                    else float(num_row["mean_val"] or 0),
+                    "mean": avg_v,
+                    "median": float(med_row["v"]) if med_row and med_row["v"] is not None else avg_v,
                     "stddev": variance**0.5,
                 }
 
         sample_values = column_distinct_values(conn, table_name, col, 10)
 
-        results.append(
-            {
-                "name": col,
-                "totalRows": total_rows,
-                "nullCount": null_count,
-                "fillRate": fill_rate,
-                "distinctCount": distinct_count,
-                "uniqueness": uniqueness,
-                "numericRatio": numeric_ratio,
-                "inferredType": inferred_type,
-                "topValues": top_values,
-                "numericStats": numeric_stats,
-                "lengthStats": length_stats,
-                "patternFlags": pattern_flags,
-                "sampleValues": sample_values,
-            }
-        )
+        results.append({
+            "name": col, "totalRows": total_rows,
+            "nullCount": null_count, "fillRate": fill_rate,
+            "distinctCount": distinct_count, "uniqueness": uniqueness,
+            "numericRatio": numeric_ratio, "inferredType": inferred_type,
+            "topValues": top_values, "numericStats": numeric_stats,
+            "lengthStats": length_stats, "patternFlags": pattern_flags,
+            "sampleValues": sample_values,
+        })
 
     return results
 

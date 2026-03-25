@@ -112,15 +112,11 @@ def profile_table_columns(
 
         profiles.append(
             ColumnProfile(
-                source_name=col,
-                position=i,
+                source_name=col, position=i,
                 sql_dtype=_VALUE_TYPE_TO_SQL.get(val_type, "TEXT"),
-                total_rows=total_rows,
-                null_pct=null_pct,
-                distinct_pct=distinct_pct,
-                neighbours=_neighbours(columns, i),
-                sample_values=samples,
-                inferred_value_type=val_type,
+                total_rows=total_rows, null_pct=null_pct,
+                distinct_pct=distinct_pct, neighbours=_neighbours(columns, i),
+                sample_values=samples, inferred_value_type=val_type,
                 semantic_tags=semantic_hints(samples),
             )
         )

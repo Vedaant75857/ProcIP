@@ -1,1 +1,1 @@
-"""Merging module — join discovery, execution, and export."""
+"""Guided merge workflow — human-in-the-loop table merging with column guidance."""

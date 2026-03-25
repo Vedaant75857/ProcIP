@@ -16,7 +16,7 @@ import {
   AlertTriangle,
   Download,
 } from "lucide-react";
-import { SurfaceCard, PrimaryButton, SecondaryButton, FillBar, itemVariants } from "./ui";
+import { SurfaceCard, PrimaryButton, SecondaryButton, FillBar, itemVariants } from "../common/ui";
 import type { LogEntry } from "./StatusLog";
 import MergeReport from "./MergeReport";
 

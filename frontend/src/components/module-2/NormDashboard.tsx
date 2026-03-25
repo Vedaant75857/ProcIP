@@ -6,8 +6,8 @@ import {
   Building2, MapPin, Tag, ClipboardList,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { SurfaceCard, PrimaryButton, SecondaryButton, EmptyState } from "../../components/ui";
-import * as api from "../../services/normalizationApi";
+import { SurfaceCard, PrimaryButton, SecondaryButton, EmptyState } from "../common/ui";
+import * as api from "./services/normalizationApi";
 
 type NormStep = "upload" | "mapping" | "operations" | "download";
 

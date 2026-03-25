@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { motion } from "motion/react";
 import { CheckCircle2, ChevronDown, ChevronRight, Clock, Download, FileText, Loader2, Package, RefreshCw, RotateCcw, Table2 } from "lucide-react";
-import { SurfaceCard, SecondaryButton, FillBar, itemVariants } from "./ui";
+import { SurfaceCard, SecondaryButton, FillBar, itemVariants } from "../common/ui";
 
 interface MergeReportProps {
   mergeResult: any;

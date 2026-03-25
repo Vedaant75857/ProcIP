@@ -2,13 +2,9 @@
 
 import atexit
 import os
-import sys
 import threading
 import time
 import uuid
-
-# Ensure backend/ is on sys.path so `shared.*` imports resolve
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env.local"))
@@ -58,7 +54,7 @@ def create_app() -> Flask:
         ("routes.appending_routes", "appending_bp"),
         ("routes.header_normalisation_routes", "header_normalisation_bp"),
         ("routes.merging_routes", "merging_bp"),
-        ("routes.summary_routes", "summary_bp"),
+        ("routes.insights_routes", "insights_bp"),
     ]
     for mod_path, bp_attr in _blueprints:
         try:

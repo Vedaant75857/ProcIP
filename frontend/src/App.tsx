@@ -2,31 +2,27 @@ import React, { useState, useCallback, useRef, useEffect } from "react";
 import { Database, AlertCircle, CheckCircle2, KeyRound, RefreshCw, MessageSquare, Sun, Moon, Table2, Sparkles } from "lucide-react";
 
 import { AnimatePresence, motion } from "motion/react";
-import DataLoading from "./components/DataLoading";
-import DataCleaning from "./components/DataCleaning";
-import HeaderNormalisation from "./components/HeaderNormalisation";
-import Appending from "./components/Appending";
-import Merging from "./components/Merging";
-import LoadingOverlay from "./components/LoadingOverlay";
-import StatusLog, { type LogEntry } from "./components/StatusLog";
-import ChatPanel from "./components/ChatPanel";
-import { StepHero, pageVariants, horizontalVariants } from "./components/ui";
-import DataPreviewOverlay from "./components/DataPreviewOverlay";
-import { useTheme } from "./components/ThemeProvider";
-import NormDashboard from "./modules/normalization/NormDashboard";
-import ErrorBoundary from "./components/ErrorBoundary";
+import DataLoading from "./components/module-1/DataLoading";
+import DataCleaning from "./components/module-1/DataCleaning";
+import HeaderNormalisation from "./components/module-1/HeaderNormalisation";
+import Appending from "./components/module-1/Appending";
+import Merging from "./components/module-1/Merging";
+import LoadingOverlay from "./components/module-1/LoadingOverlay";
+import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
+import ChatPanel from "./components/module-1/ChatPanel";
+import DataPreviewOverlay from "./components/module-1/DataPreviewOverlay";
+import { StepHero, pageVariants, horizontalVariants } from "./components/common/ui";
+import { useTheme } from "./components/common/ThemeProvider";
+import NormDashboard from "./components/module-2/NormDashboard";
+import ErrorBoundary from "./components/common/ErrorBoundary";
 
 type ActiveModule = "stitching" | "normalization";
-type StitchingMode = "pipeline" | "modular";
 type OperationId =
   | "header_norm_run"
   | "header_norm_apply"
   | "append_plan"
   | "append_mapping"
-  | "append_execute"
-  | "append_datasets"
-  | "header_normalize"
-  | "append";
+  | "append_execute";
 
 function jsonSafeStringify(value: unknown): string {
   return JSON.stringify(value, (_key, currentValue) => {
@@ -40,7 +36,6 @@ function jsonSafeStringify(value: unknown): string {
 export default function App() {
   const { theme, toggleTheme } = useTheme();
   const [activeModule, setActiveModule] = useState<ActiveModule>("stitching");
-  const [stitchingMode, setStitchingMode] = useState<StitchingMode>("pipeline");
   const [importedCsvForNorm, setImportedCsvForNorm] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [apiKey, setApiKey] = useState("");
@@ -143,10 +138,6 @@ export default function App() {
   // Chat
   const [chatOpen, setChatOpen] = useState(false);
   const [selectedChatItem, setSelectedChatItem] = useState<{ type: string; id: string; label: string } | null>(null);
-  const [modularOperation, setModularOperation] = useState<OperationId>("header_normalize");
-  const [modularSelectedTables, setModularSelectedTables] = useState<string[]>([]);
-  const [modularLastResult, setModularLastResult] = useState<any>(null);
-
   const onSelectChatItem = useCallback((item: { type: string; id: string; label: string }) => {
     setSelectedChatItem(item);
     setChatOpen(true);
@@ -231,7 +222,6 @@ export default function App() {
       const raw = sessionStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const s = JSON.parse(raw);
-      if (s.stitchingMode === "pipeline" || s.stitchingMode === "modular") setStitchingMode(s.stitchingMode);
       if (s.step) { setStep(s.step); setMaxStepReached(s.maxStepReached || s.step); }
       if (s.excludedTables) setExcludedTables(s.excludedTables);
       if (s.cleaningConfigs) setCleaningConfigs(s.cleaningConfigs);
@@ -278,7 +268,6 @@ export default function App() {
     if (!sessionId) return;
     try {
       const persistable = {
-        stitchingMode,
         sessionId, step, maxStepReached,
         inventory, previews, uploadWarnings,
         cleaningConfigs,
@@ -291,7 +280,6 @@ export default function App() {
       sessionStorage.setItem(STORAGE_KEY, jsonSafeStringify(persistable));
     } catch { /* storage full or serialization error */ }
   }, [
-    stitchingMode,
     sessionId, step, maxStepReached,
     inventory, previews, uploadWarnings,
     cleaningConfigs,
@@ -340,44 +328,22 @@ export default function App() {
     operation: OperationId,
     input: Record<string, any> = {},
     options: {
-      mode?: "pipeline" | "modular";
       autoPrepare?: boolean;
       persist?: boolean;
-      directUploadFile?: File | null;
     } = {},
   ) => {
-    let sid = sessionId;
-
-    if (options.directUploadFile) {
-      const uploadFile = options.directUploadFile;
-      if (uploadFile.size > MAX_FILE_SIZE) {
-        throw new Error(`File is too large (${(uploadFile.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 300 MB.`);
-      }
-      const formData = new FormData();
-      formData.append("file", uploadFile);
-      const uploadRes = await fetch("/api/upload", { method: "POST", body: formData });
-      if (!uploadRes.ok) throw new Error((await uploadRes.json()).error || "Failed to upload file");
-      const uploadData = await uploadRes.json();
-      sid = uploadData.sessionId;
-      setSessionId(sid);
-      setInventory(uploadData.inventory || []);
-      setPreviews(uploadData.previews || {});
-      setUploadWarnings(uploadData.warnings || []);
-      addLog("Modular Upload", "success", `Uploaded ${uploadData.inventory?.length || 0} table(s)`);
-    }
-
-    if (!sid) throw new Error("Missing session. Upload a file first.");
+    if (!sessionId) throw new Error("Missing session. Upload a file first.");
 
     const res = await fetch("/api/execution/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        sessionId: sid,
+        sessionId,
         operation,
         apiKey,
         input,
         options: {
-          mode: options.mode || "pipeline",
+          mode: "pipeline",
           autoPrepare: options.autoPrepare ?? true,
           persist: options.persist ?? true,
         },
@@ -397,9 +363,8 @@ export default function App() {
       setSessionId(payload.sessionId);
     }
     applyStatePatch(payload.statePatch || {});
-    setModularLastResult(payload);
     return payload;
-  }, [sessionId, apiKey, applyStatePatch, addLog]);
+  }, [sessionId, apiKey, applyStatePatch]);
 
   const handleUpload = async () => {
     if (!file) {
@@ -624,7 +589,7 @@ export default function App() {
     addLog("Header Normalisation", "info", "Profiling columns and running AI mapping...");
     try {
       if (controller.signal.aborted) throw new DOMException("Request cancelled.", "AbortError");
-      const exec = await runOperation("header_norm_run", {}, { mode: "pipeline", autoPrepare: true, persist: true });
+      const exec = await runOperation("header_norm_run", {}, { autoPrepare: true, persist: true });
       const data = exec?.result || {};
       setHeaderNormDecisions(data.tables || []);
       setHeaderNormStandardFields(data.standardFields || []);
@@ -652,7 +617,7 @@ export default function App() {
     setError(null);
     addLog("Header Normalisation", "info", "Applying approved header mappings...");
     try {
-      const exec = await runOperation("header_norm_apply", { decisions }, { mode: "pipeline", autoPrepare: true, persist: true });
+      const exec = await runOperation("header_norm_apply", { decisions }, { autoPrepare: true, persist: true });
       const data = exec?.result || {};
       const applied = data.appliedTables || [];
       const totalMapped = applied.reduce((s: number, t: any) => s + (t.mapped || 0), 0);
@@ -682,7 +647,7 @@ export default function App() {
     addLog("Append Plan", "info", "AI analyzing file structures to group related tables...");
     try {
       if (controller.signal.aborted) throw new DOMException("Request cancelled.", "AbortError");
-      const exec = await runOperation("append_plan", {}, { mode: "pipeline", autoPrepare: true, persist: true });
+      const exec = await runOperation("append_plan", {}, { autoPrepare: true, persist: true });
       const data = exec?.result || {};
       let finalGroups = data.appendGroups || [];
       let finalUnassigned = data.unassigned || [];
@@ -844,7 +809,7 @@ export default function App() {
     addLog("Append Mapping", "info", "AI aligning column headers across groups...");
     try {
       if (controller.signal.aborted) throw new DOMException("Request cancelled.", "AbortError");
-      const exec = await runOperation("append_mapping", { appendGroups }, { mode: "pipeline", autoPrepare: true, persist: true });
+      const exec = await runOperation("append_mapping", { appendGroups }, { autoPrepare: true, persist: true });
       const data = exec?.result || {};
       setAppendGroupMappings(data.appendGroupMappings);
       addLog("Append Mapping", "success", `Mappings generated for ${(data.appendGroupMappings || []).length} group(s)`);
@@ -870,7 +835,7 @@ export default function App() {
       const exec = await runOperation(
         "append_execute",
         { appendGroupMappings, unassignedTables },
-        { mode: "pipeline", autoPrepare: true, persist: true },
+        { autoPrepare: true, persist: true },
       );
       const data = exec?.result || {};
       setGroupSchema(data.groupSchema);
@@ -898,46 +863,6 @@ export default function App() {
     setGroupSchema((prev) => [...prev, groupRow]);
     setAppendGroups((prev) => [...prev, { group_id: groupId, group_name: groupName }]);
   }, []);
-
-  const modularOperations: Array<{ id: OperationId; label: string; description: string; requiresApi: boolean; supportsTableSelection?: boolean }> = [
-    { id: "header_normalize", label: "Header Normalisation", description: "AI normalises column headers across selected tables", requiresApi: true, supportsTableSelection: true },
-    { id: "append", label: "Append Strategy", description: "AI groups, aligns headers, and appends selected tables", requiresApi: true, supportsTableSelection: true },
-  ];
-
-  const handleModularExecute = async () => {
-    if (!sessionId) {
-      setError("No active session. Upload data first.");
-      return;
-    }
-    const opInfo = modularOperations.find((o) => o.id === modularOperation);
-    if (opInfo?.requiresApi && !apiKey?.trim()) {
-      setError("This operation requires an API key.");
-      return;
-    }
-    setLoading(true);
-    setAiLoading(Boolean(opInfo?.requiresApi));
-    setLoadingMessage(`Running ${opInfo?.label || modularOperation}...`);
-    setError(null);
-    try {
-      const parsedInput: Record<string, any> = {};
-      if (modularSelectedTables.length > 0) {
-        parsedInput.tableKeys = modularSelectedTables;
-      }
-      const exec = await runOperation(
-        modularOperation,
-        parsedInput,
-        { mode: "modular", autoPrepare: true, persist: true },
-      );
-      setModularLastResult(exec);
-      addLog("Modular", "success", `${opInfo?.label || modularOperation} completed successfully`);
-    } catch (err: any) {
-      setError(err.message || "Modular operation failed.");
-      addLog("Modular", "error", err.message || "Operation failed");
-    } finally {
-      setLoading(false);
-      setAiLoading(false);
-    }
-  };
 
   const AI_STEPS = new Set([3, 4, 6]);
 
@@ -1004,33 +929,6 @@ export default function App() {
         <div className="flex-1 overflow-y-auto px-4 py-3">
           {activeModule === "stitching" ? (
           <>
-          <div className="px-2 mb-3">
-            <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500 font-semibold mb-2">Execution Mode</p>
-            <div className="flex rounded-xl bg-neutral-100 dark:bg-neutral-800 p-1">
-              <button
-                onClick={() => setStitchingMode("pipeline")}
-                className={`flex-1 px-2 py-1.5 text-[11px] font-semibold rounded-lg transition-colors ${
-                  stitchingMode === "pipeline"
-                    ? "bg-white dark:bg-neutral-700 text-red-600 dark:text-red-400 shadow-sm"
-                    : "text-neutral-500 dark:text-neutral-400"
-                }`}
-              >
-                Pipeline
-              </button>
-              <button
-                onClick={() => setStitchingMode("modular")}
-                className={`flex-1 px-2 py-1.5 text-[11px] font-semibold rounded-lg transition-colors ${
-                  stitchingMode === "modular"
-                    ? "bg-white dark:bg-neutral-700 text-red-600 dark:text-red-400 shadow-sm"
-                    : "text-neutral-500 dark:text-neutral-400"
-                }`}
-              >
-                Modular
-              </button>
-            </div>
-          </div>
-          {stitchingMode === "pipeline" ? (
-            <>
               <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500 font-semibold mb-4 px-2">Workflow</p>
               <nav className="relative">
                 <div className="absolute left-[18px] top-5 bottom-5 w-px bg-neutral-200 dark:bg-neutral-700 z-0" />
@@ -1074,28 +972,6 @@ export default function App() {
                   })}
                 </div>
               </nav>
-            </>
-          ) : (
-            <>
-              <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500 font-semibold mb-3 px-2">Operations</p>
-              <div className="space-y-1 px-1">
-                {modularOperations.map((op) => (
-                  <button
-                    key={op.id}
-                    onClick={() => setModularOperation(op.id)}
-                    className={`w-full text-left px-3 py-2.5 rounded-xl text-xs transition-colors ${
-                      modularOperation === op.id
-                        ? "bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800"
-                        : "text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 border border-transparent"
-                    }`}
-                  >
-                    <div className="font-semibold">{op.label}</div>
-                    <div className="text-[10px] opacity-60 mt-0.5">{op.description}</div>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
           </>
           ) : (
           <>
@@ -1155,137 +1031,6 @@ export default function App() {
               </ErrorBoundary>
             </>
           ) : (
-            <>
-            {stitchingMode === "modular" && (
-              <div className="space-y-4">
-                <div className="rounded-3xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-sm p-6">
-                  <h2 className="text-lg font-semibold text-neutral-900 dark:text-white mb-1">Modular Execution</h2>
-                  <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-5">
-                    Run any pipeline step independently on your session data.
-                  </p>
-
-                  {/* Operation cards */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-5">
-                    {modularOperations.map((op) => (
-                      <button
-                        key={op.id}
-                        type="button"
-                        onClick={() => setModularOperation(op.id)}
-                        className={[
-                          "text-left rounded-xl border px-4 py-3 text-xs transition-all",
-                          modularOperation === op.id
-                            ? "border-red-500 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 ring-1 ring-red-200 dark:ring-red-800"
-                            : "border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 hover:border-red-300",
-                        ].join(" ")}
-                      >
-                        <div className="font-bold">{op.label}</div>
-                        <div className="mt-0.5 opacity-60 text-[11px]">{op.description}</div>
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Table selection */}
-                  {modularOperations.find((op) => op.id === modularOperation)?.supportsTableSelection && (
-                    <div className="mb-5">
-                      <p className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 mb-2">
-                        Select Tables
-                      </p>
-                      <div className="max-h-48 overflow-auto rounded-xl border border-neutral-200 dark:border-neutral-700 p-2.5 space-y-1">
-                        {inventory.length === 0 ? (
-                          <p className="text-xs text-neutral-400 italic">No session tables. Upload data first via Pipeline mode.</p>
-                        ) : (
-                          <>
-                            <label className="flex items-center gap-2 text-xs font-semibold text-neutral-600 dark:text-neutral-300 pb-1 border-b border-neutral-100 dark:border-neutral-800 mb-1 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={modularSelectedTables.length === inventory.length && inventory.length > 0}
-                                onChange={(e) => {
-                                  if (e.target.checked) {
-                                    setModularSelectedTables(inventory.map((row: any, idx: number) => String(row?.table_key || row?.tableKey || row?.name || row?.id || `table_${idx}`)));
-                                  } else {
-                                    setModularSelectedTables([]);
-                                  }
-                                }}
-                              />
-                              Select All ({inventory.length})
-                            </label>
-                            {inventory.map((row: any, idx: number) => {
-                              const tableKey = String(row?.table_key || row?.tableKey || row?.name || row?.id || `table_${idx}`);
-                              const checked = modularSelectedTables.includes(tableKey);
-                              return (
-                                <label key={tableKey} className="flex items-center gap-2 text-xs text-neutral-700 dark:text-neutral-300 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800 rounded px-1 py-0.5">
-                                  <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    onChange={(e) => {
-                                      const on = e.target.checked;
-                                      setModularSelectedTables((prev) =>
-                                        on ? [...prev, tableKey] : prev.filter((t) => t !== tableKey),
-                                      );
-                                    }}
-                                  />
-                                  <span className="truncate">{tableKey}</span>
-                                </label>
-                              );
-                            })}
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Action buttons */}
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => { void handleModularExecute(); }}
-                      disabled={loading || !sessionId}
-                      className="px-5 py-2.5 rounded-xl text-xs font-bold bg-red-600 text-white hover:bg-red-700 disabled:opacity-60 transition-colors"
-                    >
-                      {loading ? "Running..." : `Run ${modularOperations.find(o => o.id === modularOperation)?.label || "Operation"}`}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setStitchingMode("pipeline")}
-                      className="px-4 py-2.5 rounded-xl text-xs font-semibold border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
-                    >
-                      Switch To Pipeline
-                    </button>
-                  </div>
-
-                  {!sessionId && (
-                    <p className="mt-3 text-xs text-amber-600 dark:text-amber-400 font-medium">
-                      No active session. Switch to Pipeline mode and upload data first.
-                    </p>
-                  )}
-                </div>
-
-                {/* Result display */}
-                {modularLastResult && (
-                  <div className="rounded-3xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-sm p-6">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">Result</h3>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${modularLastResult?.ok ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400" : "bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400"}`}>
-                        {modularLastResult?.ok ? "Success" : "Error"}
-                      </span>
-                    </div>
-                    {modularLastResult?.ok && modularLastResult?.metrics && (
-                      <div className="flex gap-3 mb-3 flex-wrap">
-                        {Object.entries(modularLastResult.metrics as Record<string, any>).map(([op, m]: [string, any]) => (
-                          <span key={op} className="text-[10px] bg-neutral-100 dark:bg-neutral-800 px-2 py-1 rounded-lg text-neutral-500 dark:text-neutral-400">
-                            {op}: {m?.duration_ms}ms
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    <pre className="text-[11px] overflow-auto max-h-[400px] bg-neutral-50 dark:bg-neutral-800 rounded-xl p-3 border border-neutral-200 dark:border-neutral-700">
-                      {JSON.stringify(modularLastResult?.result || modularLastResult, null, 2)}
-                    </pre>
-                  </div>
-                )}
-              </div>
-            )}
-            {stitchingMode === "pipeline" && (
             <>
             <div className="flex justify-end gap-2">
               {Object.keys(previews).length > 0 && (
@@ -1492,8 +1237,6 @@ export default function App() {
             </AnimatePresence>
 
             <LoadingOverlay isLoading={aiLoading} message={loadingMessage} onCancel={cancelAiRequest} />
-            </>
-            )}
             </>
           )}
 

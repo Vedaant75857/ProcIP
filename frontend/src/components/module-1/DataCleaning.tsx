@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Loader2, Sparkles, ArrowRight, Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
 import { motion } from "motion/react";
-import { PrimaryButton, SecondaryButton } from "./ui";
+import { PrimaryButton, SecondaryButton } from "../common/ui";
 
 interface CleaningConfig {
   removeNullRows: boolean;

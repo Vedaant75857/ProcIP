@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { CheckCircle2, AlertTriangle, ChevronRight, ChevronDown, Layers, ArrowRight, Table2 } from "lucide-react";
 import { motion } from "motion/react";
-import { PrimaryButton, ResultCapsules, Tooltip, FillBar } from "./ui";
+import { PrimaryButton, ResultCapsules, Tooltip, FillBar } from "../common/ui";
 
 interface AppendReportProps {
   appendReport: any[];

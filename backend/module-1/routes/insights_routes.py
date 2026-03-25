@@ -1,4 +1,4 @@
-"""Summary / analysis / date / insights API routes."""
+"""Execution engine / insights / chat API routes."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from data_loading.service import (
     build_files_payload_from_db,
     build_inventory_from_db,
 )
-summary_bp = Blueprint("summary_bp", __name__)
+insights_bp = Blueprint("insights_bp", __name__)
 
 _module_dir = os.path.dirname(os.path.abspath(__file__))
 _summary_root = os.path.normpath(os.path.join(_module_dir, "..", "summary"))
@@ -44,41 +44,16 @@ def _load_service(module_qual: str, relative_path: str):
     return mod
 
 
-_date_std = _load_service("summary_date_std_service", os.path.join("date-standardisation", "service.py"))
 _insights = _load_service("summary_insights_service", os.path.join("insights", "service.py"))
 _hn_root = os.path.normpath(os.path.join(_module_dir, "..", "header-normalisation"))
 _hn_service = _load_service("summary_header_norm_service", os.path.join("..", "header-normalisation", "service.py"))
 _hn_schema = _load_service("summary_header_norm_schema", os.path.join("..", "header-normalisation", "schema_mapper.py"))
-detect_date_columns = _date_std.detect_date_columns
-analyze_date_formats = _date_std.analyze_date_formats
-standardize_dates = _date_std.standardize_dates
 run_insights = _insights.run_insights
 run_pre_merge_analysis = _insights.run_pre_merge_analysis
 run_chat = _insights.run_chat
 run_header_norm = _hn_service.run_header_norm
 apply_header_norm = _hn_service.apply_header_norm
 STANDARD_FIELDS = _hn_schema.STANDARD_FIELDS
-
-
-def _sample_formats(samples: list[str]) -> list[str]:
-    out: list[str] = []
-    for s in samples[:10]:
-        t = str(s).strip()
-        if not t:
-            continue
-        if "-" in t and len(t) >= 8 and t[:4].isdigit():
-            out.append("YYYY-MM-DD")
-        elif "/" in t and len(t) >= 8 and t[:4].isdigit():
-            out.append("YYYY/MM/DD")
-        elif "/" in t and len(t) >= 8:
-            out.append("DD/MM/YYYY_or_MM/DD/YYYY")
-        elif t.isdigit() and len(t) == 8:
-            out.append("YYYYMMDD")
-    seen: list[str] = []
-    for fmt in out:
-        if fmt not in seen:
-            seen.append(fmt)
-    return seen[:4]
 
 
 def _build_chat_context(conn, body: dict) -> str:
@@ -226,48 +201,6 @@ _OPERATION_SPECS: dict[str, dict[str, Any]] = {
         "auto_prereqs": ["append_mapping"],
         "produces": ["groupSchemaTableRows"],
     },
-    "date_detect": {
-        "required_inputs": [],
-        "required_artifacts": ["table:final_merged"],
-        "requires_api_key": False,
-        "auto_prereqs": [],
-        "produces": ["dateDetectLast"],
-    },
-    "date_analyze": {
-        "required_inputs": ["columns"],
-        "required_artifacts": ["table:final_merged"],
-        "requires_api_key": False,
-        "auto_prereqs": [],
-        "produces": ["dateAnalyzeLast"],
-    },
-    "date_standardize": {
-        "required_inputs": ["columns"],
-        "required_artifacts": ["table:final_merged"],
-        "requires_api_key": False,
-        "auto_prereqs": [],
-        "produces": ["dateStandardizeLast"],
-    },
-    "append_datasets": {
-        "required_inputs": ["tableKeys"],
-        "required_artifacts": [],
-        "requires_api_key": True,
-        "auto_prereqs": [],
-        "produces": ["groupSchemaTableRows"],
-    },
-    "header_normalize": {
-        "required_inputs": [],
-        "required_artifacts": ["inv"],
-        "requires_api_key": True,
-        "auto_prereqs": [],
-        "produces": ["headerNormApplied"],
-    },
-    "append": {
-        "required_inputs": [],
-        "required_artifacts": ["filesPayload"],
-        "requires_api_key": True,
-        "auto_prereqs": [],
-        "produces": ["groupSchemaTableRows"],
-    },
 }
 
 _OPERATION_INPUT_HINTS: dict[str, dict[str, Any]] = {
@@ -285,28 +218,6 @@ _OPERATION_INPUT_HINTS: dict[str, dict[str, Any]] = {
     "append_execute": {
         "appendGroupMappings": {"type": "array", "required": False, "description": "Group mappings to execute."},
         "unassignedTables": {"type": "array", "required": False, "description": "Optional excluded table keys."},
-    },
-    "date_detect": {
-        "tableName": {"type": "string", "required": False, "description": "Table to inspect (default: final_merged)."},
-    },
-    "date_analyze": {
-        "tableName": {"type": "string", "required": False, "description": "Table to inspect (default: final_merged)."},
-        "columns": {"type": "array", "required": True, "description": "Columns to analyze."},
-    },
-    "date_standardize": {
-        "tableName": {"type": "string", "required": False, "description": "Table to update (default: final_merged)."},
-        "columns": {"type": "array", "required": True, "description": "Columns to standardize."},
-        "targetFormat": {"type": "string", "required": False, "description": "YYYY-MM-DD|ISO|DD/MM/YYYY|MM/DD/YYYY"},
-    },
-    "append_datasets": {
-        "tableKeys": {"type": "array", "required": True, "description": "Table keys to append directly."},
-        "groupId": {"type": "string", "required": False, "description": "Optional output group id."},
-    },
-    "header_normalize": {
-        "tableKeys": {"type": "array", "required": False, "description": "Optional table keys to scope normalization."},
-    },
-    "append": {
-        "tableKeys": {"type": "array", "required": False, "description": "Optional table keys to scope append planning."},
     },
 }
 
@@ -350,10 +261,6 @@ def _missing_requirements(conn, operation: str, input_data: dict[str, Any], api_
         if artifact == "appendGroupMappings":
             explicit_mappings = input_data.get("appendGroupMappings")
             if isinstance(explicit_mappings, list) and len(explicit_mappings) > 0:
-                continue
-        if artifact == "table:final_merged":
-            explicit_table = input_data.get("tableName")
-            if explicit_table and table_exists(conn, str(explicit_table)):
                 continue
         if not _artifact_exists(conn, artifact):
             missing.append(f"artifact:{artifact}")
@@ -422,65 +329,6 @@ def _execute_operation(conn, session_id: str, operation: str, input_data: dict[s
             ]
         return run_append_execute(conn, mappings, unassigned)
 
-    if operation == "date_detect":
-        table_name = str(input_data.get("tableName") or "final_merged")
-        result = detect_date_columns(conn, table_name)
-        set_meta(conn, "dateDetectLast", result)
-        return result
-
-    if operation == "date_analyze":
-        table_name = str(input_data.get("tableName") or "final_merged")
-        columns = input_data.get("columns") or []
-        if not isinstance(columns, list) or not columns:
-            raise ValueError("Select at least one column.")
-        out = [analyze_date_formats(conn, table_name, str(col)) for col in columns]
-        result = {"columns": out}
-        set_meta(conn, "dateAnalyzeLast", result)
-        return result
-
-    if operation == "date_standardize":
-        table_name = str(input_data.get("tableName") or "final_merged")
-        columns = input_data.get("columns") or []
-        target = str(input_data.get("targetFormat") or "YYYY-MM-DD")
-        if not isinstance(columns, list) or not columns:
-            raise ValueError("Select at least one column.")
-        out = [standardize_dates(conn, table_name, str(col), target) for col in columns]
-        result = {"results": out, "targetFormat": target}
-        set_meta(conn, "dateStandardizeLast", result)
-        return result
-
-    if operation == "append_datasets":
-        table_keys = [str(t) for t in (input_data.get("tableKeys") or []) if str(t).strip()]
-        if not table_keys:
-            raise ValueError("tableKeys is required.")
-        group_id = str(input_data.get("groupId") or f"modular_group_{int(time.time())}")
-        append_groups = [{"group_id": group_id, "tables": table_keys, "reason": "Modular append"}]
-        set_meta(conn, "appendGroups", append_groups)
-        set_meta(conn, "unassigned", [])
-        mapping = run_append_mapping(conn, append_groups, api_key)
-        set_meta(conn, "appendGroupMappings", mapping.get("appendGroupMappings") or [])
-        executed = run_append_execute(conn, mapping.get("appendGroupMappings") or [], [])
-        return {"appendGroups": append_groups, "appendGroupMappings": mapping.get("appendGroupMappings"), **executed}
-
-    if operation == "header_normalize":
-        norm_result = run_header_norm(conn, api_key)
-        decisions = _auto_header_norm_decisions(conn)
-        if decisions:
-            apply_result = apply_header_norm(conn, decisions)
-            norm_result["applyResult"] = apply_result
-        return norm_result
-
-    if operation == "append":
-        _apply_preferred_files_payload(conn, input_data)
-        plan_result = run_append_plan(conn, api_key)
-        append_groups = plan_result.get("appendGroups") or []
-        if not append_groups:
-            return plan_result
-        mapping = run_append_mapping(conn, append_groups, api_key)
-        set_meta(conn, "appendGroupMappings", mapping.get("appendGroupMappings") or [])
-        executed = run_append_execute(conn, mapping.get("appendGroupMappings") or [], [])
-        return {**plan_result, "appendGroupMappings": mapping.get("appendGroupMappings"), **executed}
-
     raise ValueError(f"Unsupported operation: {operation}")
 
 
@@ -529,32 +377,6 @@ def _build_artifact_summary(conn) -> dict[str, Any]:
     }
 
 
-def _build_execution_catalog() -> dict[str, Any]:
-    items: list[dict[str, Any]] = []
-    graph: dict[str, list[str]] = {}
-    for op, spec in _OPERATION_SPECS.items():
-        graph[op] = list(spec.get("auto_prereqs") or [])
-        items.append(
-            {
-                "id": op,
-                "required_inputs": list(spec.get("required_inputs") or []),
-                "required_artifacts": list(spec.get("required_artifacts") or []),
-                "requires_api_key": bool(spec.get("requires_api_key")),
-                "auto_prereqs": list(spec.get("auto_prereqs") or []),
-                "produces": list(spec.get("produces") or []),
-                "produced_artifacts": list(spec.get("produces") or []),
-                "input_schema_hints": _OPERATION_INPUT_HINTS.get(op, {}),
-            }
-        )
-    return {
-        "operations": items,
-        "prerequisite_graph": graph,
-        "defaults": {
-            "options": {"mode": "pipeline", "autoPrepare": True, "persist": True},
-        },
-    }
-
-
 def execute_operation_kernel(
     session_id: str | None,
     operation: str,
@@ -565,7 +387,7 @@ def execute_operation_kernel(
 ) -> tuple[dict[str, Any], int]:
     input_data = input_data if isinstance(input_data, dict) else {}
     options = options if isinstance(options, dict) else {}
-    mode = str(options.get("mode") or "modular")
+    mode = str(options.get("mode") or "pipeline")
     auto_prepare = bool(options.get("autoPrepare", True))
     persist = bool(options.get("persist", True))
 
@@ -659,15 +481,7 @@ def execute_operation_kernel(
             }, 500
 
 
-@summary_bp.route("/execution/catalog", methods=["POST"])
-def execution_catalog():
-    try:
-        return jsonify(_build_execution_catalog())
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 500
-
-
-@summary_bp.route("/execution/state", methods=["GET"])
+@insights_bp.route("/execution/state", methods=["GET"])
 def execution_state():
     try:
         session_id = request.args.get("sessionId")
@@ -693,7 +507,7 @@ def execution_state():
         return jsonify({"error": str(exc)}), 500
 
 
-@summary_bp.route("/execution/run", methods=["POST"])
+@insights_bp.route("/execution/run", methods=["POST"])
 def execution_run():
     try:
         body = request.get_json(force=True, silent=True) or {}
@@ -715,136 +529,7 @@ def execution_run():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
-@summary_bp.route("/date-detect", methods=["POST"])
-def date_detect():
-    try:
-        body = request.get_json(force=True, silent=True) or {}
-        payload, status = execute_operation_kernel(
-            session_id=body.get("sessionId"),
-            operation="date_detect",
-            api_key=body.get("apiKey"),
-            input_data={"tableName": body.get("tableName") or "final_merged"},
-            options={"mode": "pipeline", "autoPrepare": True, "persist": True},
-            request_id=request.headers.get("X-Request-Id"),
-        )
-        if status != 200:
-            return jsonify({"error": payload.get("error"), "missing_requirements": payload.get("missing_requirements")}), status
-        result = payload.get("result") or {}
-        date_columns = []
-        for row in result.get("dateColumns", []):
-            confidence = int(round(float(row.get("dateRegexHitRate") or 0.0) * 100))
-            sample_formats_seen = _sample_formats(list(row.get("samples") or []))
-            date_columns.append(
-                {
-                    "column": row.get("column"),
-                    "confidence": confidence,
-                    "sample_formats_seen": sample_formats_seen,
-                    "reasoning": f"{confidence}% of sampled values match date patterns",
-                }
-            )
-        return jsonify(
-            {
-                **result,
-                "dateColumns": date_columns,
-            }
-        )
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 500
-
-
-@summary_bp.route("/date-analyze", methods=["POST"])
-def date_analyze():
-    try:
-        body = request.get_json(force=True, silent=True) or {}
-        columns = body.get("columns") or []
-        payload, status = execute_operation_kernel(
-            session_id=body.get("sessionId"),
-            operation="date_analyze",
-            api_key=body.get("apiKey"),
-            input_data={"tableName": body.get("tableName") or "final_merged", "columns": columns},
-            options={"mode": "pipeline", "autoPrepare": True, "persist": True},
-            request_id=request.headers.get("X-Request-Id"),
-        )
-        if status != 200:
-            return jsonify({"error": payload.get("error"), "missing_requirements": payload.get("missing_requirements")}), status
-        result = payload.get("result") or {}
-        out = []
-        for row in (result.get("columns") or []):
-            breakdown = list(row.get("formatBreakdown") or [])
-            total_vals = int(row.get("nonNullCount") or 0)
-            ambiguous = sum(int(b.get("count") or 0) for b in breakdown if "_or_" in str(b.get("format") or ""))
-            unrecognized = sum(int(b.get("count") or 0) for b in breakdown if str(b.get("format") or "") == "unknown")
-            shaped_breakdown = []
-            for b in breakdown:
-                c = int(b.get("count") or 0)
-                shaped_breakdown.append(
-                    {
-                        "format": b.get("format"),
-                        "count": c,
-                        "percentage": round((c / max(total_vals, 1)) * 100, 2),
-                    }
-                )
-            out.append(
-                {
-                    "column": row.get("column"),
-                    "totalValues": total_vals,
-                    "ambiguousCount": ambiguous,
-                    "unrecognizedCount": unrecognized,
-                    "formatBreakdown": shaped_breakdown,
-                    "sourceBreakdown": [],
-                    "sampleValues": row.get("sampleValues", []),
-                }
-            )
-        return jsonify({"columns": out})
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 500
-
-
-@summary_bp.route("/date-standardize", methods=["POST"])
-def date_standardize():
-    try:
-        body = request.get_json(force=True, silent=True) or {}
-        target_format = body.get("targetFormat") or "YYYY-MM-DD"
-        payload, status = execute_operation_kernel(
-            session_id=body.get("sessionId"),
-            operation="date_standardize",
-            api_key=body.get("apiKey"),
-            input_data={
-                "tableName": body.get("tableName") or "final_merged",
-                "columns": body.get("columns") or [],
-                "targetFormat": target_format,
-            },
-            options={"mode": "pipeline", "autoPrepare": True, "persist": True},
-            request_id=request.headers.get("X-Request-Id"),
-        )
-        if status != 200:
-            return jsonify({"error": payload.get("error"), "missing_requirements": payload.get("missing_requirements")}), status
-        result = payload.get("result") or {}
-        results = list(result.get("results") or [])
-        shaped = []
-        for r in results:
-            converted = int(r.get("rowsUpdated") or 0)
-            failed = int(r.get("rowsFailed") or 0)
-            total = converted + failed
-            confidence = int(round((converted / max(total, 1)) * 100))
-            shaped.append(
-                {
-                    "column": r.get("sourceColumn"),
-                    "cleanColumn": r.get("cleanColumn"),
-                    "converted": converted,
-                    "failed": failed,
-                    "confidenceScore": confidence,
-                    "targetFormat": r.get("targetFormat"),
-                }
-            )
-        return jsonify({"columns": shaped, "results": results, "targetFormat": target_format})
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 500
-
-
-@summary_bp.route("/group-insights", methods=["POST"])
+@insights_bp.route("/group-insights", methods=["POST"])
 def group_insights():
     try:
         body = request.get_json(force=True, silent=True) or {}
@@ -872,7 +557,7 @@ def group_insights():
         return jsonify({"error": str(exc)}), 500
 
 
-@summary_bp.route("/pre-merge-analysis", methods=["POST"])
+@insights_bp.route("/pre-merge-analysis", methods=["POST"])
 def pre_merge_analysis():
     try:
         body = request.get_json(force=True, silent=True) or {}
@@ -897,7 +582,7 @@ def pre_merge_analysis():
         return jsonify({"error": str(exc)}), 500
 
 
-@summary_bp.route("/chat", methods=["POST"])
+@insights_bp.route("/chat", methods=["POST"])
 def chat():
     try:
         body = request.get_json(force=True, silent=True) or {}

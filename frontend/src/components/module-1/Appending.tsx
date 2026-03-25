@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Loader2, ChevronRight, ChevronDown, LayoutGrid, ListChecks, ArrowRight, Info, Plus, MoreHorizontal, Undo2, Ban, X, Eye, EyeOff, MessageSquare, Database } from "lucide-react";
 import { motion } from "motion/react";
 import AppendReport from "./AppendReport";
-import { PrimaryButton, EmptyState } from "./ui";
+import { PrimaryButton, EmptyState } from "../common/ui";
 
 interface AppendingProps {
   step: number;

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { X, Send, Loader2, MessageSquare, Trash2, Sparkles } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { softSpring } from "./ui";
+import { softSpring } from "../common/ui";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system_note";

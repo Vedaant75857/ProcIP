@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { ArrowRight, Columns3, Loader2, SkipForward, Maximize2, Minimize2, Download, Upload, CheckSquare, Square, ChevronDown, ChevronRight } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { PrimaryButton, SecondaryButton, SurfaceCard } from "./ui";
+import { PrimaryButton, SecondaryButton, SurfaceCard } from "../common/ui";
 
 interface HeaderNormalisationProps {
   sessionId: string;

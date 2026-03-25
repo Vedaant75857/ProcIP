@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback } from "react";
 import { Upload, Loader2, FileText, Database, ArrowRight, FolderOpen, X, KeyRound, ChevronDown, ChevronRight, Trash2, RowsIcon, Check, MessageSquare, CheckCircle2 } from "lucide-react";
 import { motion } from "motion/react";
 import JSZip from "jszip";
-import { SurfaceCard, EmptyState, PrimaryButton, itemVariants } from "./ui";
+import { SurfaceCard, EmptyState, PrimaryButton, itemVariants } from "../common/ui";
 
 const ACCEPTED_EXTENSIONS = [".csv", ".xlsx", ".xlsm", ".xltx", ".xltm", ".zip"];
 

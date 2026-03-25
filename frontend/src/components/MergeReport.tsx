@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { motion } from "motion/react";
-import { ArrowRight, CheckCircle2, ChevronDown, ChevronRight, Clock, Download, FileText, Loader2, Package, RefreshCw, RotateCcw, Table2 } from "lucide-react";
-import { SurfaceCard, PrimaryButton, SecondaryButton, FillBar, itemVariants } from "./ui";
+import { CheckCircle2, ChevronDown, ChevronRight, Clock, Download, FileText, Loader2, Package, RefreshCw, RotateCcw, Table2 } from "lucide-react";
+import { SurfaceCard, SecondaryButton, FillBar, itemVariants } from "./ui";
 
 interface MergeReportProps {
   mergeResult: any;
@@ -9,12 +9,12 @@ interface MergeReportProps {
   mergeHistory: any[];
   groupNameMap: Record<string, string>;
   onDownloadXlsx: (version?: number) => void;
+  onDownloadCsv: () => void;
   onDownloadAllZip: () => void;
   onDownloadReport: () => void;
   onRedoMerge: () => void;
   onMergeAgain: () => void;
   mergeAgainLoading?: boolean;
-  onProceedToAnalysis: () => void;
 }
 
 export default function MergeReport({
@@ -23,12 +23,12 @@ export default function MergeReport({
   mergeHistory,
   groupNameMap,
   onDownloadXlsx,
+  onDownloadCsv,
   onDownloadAllZip,
   onDownloadReport,
   onRedoMerge,
   onMergeAgain,
   mergeAgainLoading,
-  onProceedToAnalysis,
 }: MergeReportProps) {
   const [historyOpen, setHistoryOpen] = useState(true);
 
@@ -281,13 +281,14 @@ export default function MergeReport({
         </div>
 
         <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-neutral-100 dark:border-neutral-800">
+          <SecondaryButton onClick={onDownloadCsv}>
+            <Download className="w-4 h-4" />
+            Download CSV
+          </SecondaryButton>
           <SecondaryButton onClick={onDownloadReport}>
             <FileText className="w-4 h-4" />
             Download Audit Report
           </SecondaryButton>
-          <PrimaryButton onClick={onProceedToAnalysis} className="ml-auto bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200 dark:shadow-emerald-900/30">
-            Proceed to Analysis <ArrowRight className="w-4 h-4" />
-          </PrimaryButton>
         </div>
       </SurfaceCard>
     </motion.div>

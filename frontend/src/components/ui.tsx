@@ -127,9 +127,6 @@ const STEP_META: Record<number, { title: string; description: string }> = {
   5: { title: "Data Cleaning", description: "Clean and prepare individual tables before grouping." },
   6: { title: "Merge", description: "Select join keys and merge your tables with guided column matching." },
   7: { title: "Merge Results", description: "Review merge quality and download your unified dataset." },
-  8: { title: "Analysis", description: "Explore patterns and insights in your consolidated data." },
-  9: { title: "Procurement Mapping", description: "Map columns to standard procurement fields with AI assistance." },
-  10: { title: "Procurement Views", description: "Analyze which procurement views your data supports." },
 };
 
 interface StepHeroProps {

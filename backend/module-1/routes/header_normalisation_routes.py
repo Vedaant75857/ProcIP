@@ -265,27 +265,3 @@ def header_norm_upload_excel():
         return jsonify({"error": "openpyxl not installed on server"}), 500
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
-
-
-# ---------------------------------------------------------------------------
-# Procurement mapping on final_merged (existing, unchanged)
-# ---------------------------------------------------------------------------
-
-
-@header_normalisation_bp.route("/procurement-mapping", methods=["POST"])
-def procurement_mapping():
-    try:
-        body = request.get_json(force=True)
-        payload, status = execute_operation_kernel(
-            session_id=body.get("sessionId"),
-            operation="procurement_mapping",
-            api_key=body.get("apiKey"),
-            input_data={},
-            options={"mode": "pipeline", "autoPrepare": True, "persist": True},
-            request_id=request.headers.get("X-Request-Id"),
-        )
-        if status != 200:
-            return jsonify({"error": payload.get("error"), "missing_requirements": payload.get("missing_requirements")}), status
-        return jsonify(payload.get("result") or {})
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500

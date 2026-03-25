@@ -546,14 +546,20 @@ def execute_merge(
     except Exception as exc:
         raise ValueError(f"Merge execution failed: {exc}") from exc
     finally:
-        conn.execute("DROP TABLE IF EXISTS _dedup_source")
+        try:
+            conn.execute("DROP TABLE IF EXISTS _dedup_source")
+        except Exception:
+            pass
         try:
             conn.execute(f"DROP INDEX IF EXISTS {quote_id(base_idx_name)}")
         except Exception:
             pass
+        conn.commit()
 
     result_rows = table_row_count(conn, result_table)
     result_cols_list = read_table_columns(conn, result_table)
+    if result_rows == 0 and not table_exists(conn, result_table):
+        raise ValueError(f"Merge table {result_table} was not created.")
 
     return {
         "result_table": result_table,
@@ -720,6 +726,7 @@ def finalize_merge(
     final_rows = table_row_count(conn, "final_merged")
     final_cols = read_table_columns(conn, "final_merged")
     preview = read_table(conn, "final_merged", 50)
+    col_stats = column_stats(conn, "final_merged")
 
     # Build auto-name label from group names
     schema = get_meta(conn, "groupSchemaTableRows") or []
@@ -755,6 +762,7 @@ def finalize_merge(
         "rows": final_rows,
         "cols": len(final_cols),
         "columns": final_cols,
+        "column_stats": col_stats,
         "preview": preview,
         "approved_count": len(approved_merges),
         "merge_history": merge_history,
@@ -771,9 +779,18 @@ def skip_merge(conn: sqlite3.Connection, session_id: str, base_group_id: str) ->
     if not base_sql or not table_exists(conn, base_sql):
         raise ValueError(f"Table not found for group {base_group_id}")
 
-    drop_table(conn, "final_merged")
+    # Versioned table for consistency with regular merge flow
+    merge_history = get_meta(conn, "merge_history") or []
+    version = len(merge_history) + 1
+    versioned_table = f"final_merged_v{version}"
+
+    drop_table(conn, versioned_table)
     bt = quote_id(base_sql)
-    conn.execute(f"CREATE TABLE final_merged AS SELECT * FROM {bt}")
+    conn.execute(f"CREATE TABLE {quote_id(versioned_table)} AS SELECT * FROM {bt}")
+    conn.commit()
+
+    drop_table(conn, "final_merged")
+    conn.execute(f"CREATE TABLE final_merged AS SELECT * FROM {quote_id(versioned_table)}")
     conn.commit()
 
     set_meta(conn, "mergeBaseGroupId", base_group_id)
@@ -782,11 +799,37 @@ def skip_merge(conn: sqlite3.Connection, session_id: str, base_group_id: str) ->
     rows = table_row_count(conn, "final_merged")
     cols = read_table_columns(conn, "final_merged")
     preview = read_table(conn, "final_merged", 50)
+    col_stats = column_stats(conn, "final_merged")
+
+    schema = get_meta(conn, "groupSchemaTableRows") or []
+    name_map = {g["group_id"]: g.get("group_name", g["group_id"]) for g in schema}
+    base_name = name_map.get(base_group_id, base_group_id)
+    raw_label = f"skip_{base_name}.xlsx"
+    file_label = "".join(c if c.isalnum() or c in "._- " else "_" for c in raw_label)
+
+    history_entry = {
+        "version": version,
+        "table_name": versioned_table,
+        "timestamp": datetime.now().isoformat(),
+        "base_group_id": base_group_id,
+        "source_group_ids": [],
+        "rows": rows,
+        "cols": len(cols),
+        "file_label": file_label,
+    }
+    merge_history.append(history_entry)
+    set_meta(conn, "merge_history", merge_history)
+
     return {
         "final_table": "final_merged",
+        "versioned_table": versioned_table,
+        "version": version,
         "rows": rows,
         "cols": len(cols),
         "columns": cols,
+        "column_stats": col_stats,
         "preview": preview,
         "skipped": True,
+        "merge_history": merge_history,
+        "file_label": file_label,
     }

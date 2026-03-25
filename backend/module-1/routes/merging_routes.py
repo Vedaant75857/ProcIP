@@ -163,6 +163,8 @@ def execute():
                     conn, session_id, base_sql, source_sql, key_pairs, pull_columns, source_group_id
                 )
 
+                conn.commit()
+
                 yield _sse({"stage": "stats", "progress": 55, "message": "Computing column statistics..."})
 
                 report = generate_validation_report(
@@ -179,7 +181,11 @@ def execute():
         return Response(
             stream_with_context(_stream()),
             mimetype="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "close",
+            },
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -353,6 +359,56 @@ def download_step_xlsx():
             xlsx_bytes,
             headers={
                 "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/download-step-csv", methods=["GET"])
+def download_step_csv():
+    """Streaming CSV download of a per-source _merge_step_ table."""
+    try:
+        session_id = request.args.get("sessionId")
+        source_group_id = request.args.get("sourceGroupId")
+        if not session_id or not source_group_id:
+            return jsonify({"error": "sessionId and sourceGroupId are required"}), 400
+        conn = get_session_db(session_id)
+        step_table = f"_merge_step_{source_group_id}"
+        if not table_exists(conn, step_table):
+            return jsonify({"error": "Step table not found — not yet executed or already finalized"}), 404
+
+        schema = get_meta(conn, "groupSchemaTableRows") or []
+        name_map = {g["group_id"]: g.get("group_name", g["group_id"]) for g in schema}
+        src_name = name_map.get(source_group_id, source_group_id)
+        safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in src_name)
+        filename = f"step_merge_{safe_name}.csv"
+
+        def _generate():
+            columns = read_table_columns(conn, step_table)
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(columns)
+            yield buf.getvalue()
+            buf.seek(0)
+            buf.truncate()
+
+            cursor = conn.execute(f"SELECT * FROM {quote_id(step_table)}")
+            while True:
+                rows = cursor.fetchmany(2000)
+                if not rows:
+                    break
+                for row in rows:
+                    writer.writerow([row[c] for c in columns])
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate()
+
+        return Response(
+            stream_with_context(_generate()),
+            headers={
+                "Content-Type": "text/csv; charset=utf-8",
                 "Content-Disposition": f'attachment; filename="{filename}"',
             },
         )

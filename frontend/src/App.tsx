@@ -7,8 +7,6 @@ import DataCleaning from "./components/DataCleaning";
 import HeaderNormalisation from "./components/HeaderNormalisation";
 import Appending from "./components/Appending";
 import Merging from "./components/Merging";
-import Procurement from "./components/Procurement";
-import Analysis from "./components/Analysis";
 import LoadingOverlay from "./components/LoadingOverlay";
 import StatusLog, { type LogEntry } from "./components/StatusLog";
 import ChatPanel from "./components/ChatPanel";
@@ -26,8 +24,6 @@ type OperationId =
   | "append_plan"
   | "append_mapping"
   | "append_execute"
-  | "analysis_run"
-  | "procurement_mapping"
   | "append_datasets"
   | "header_normalize"
   | "append";
@@ -138,19 +134,6 @@ export default function App() {
   const [mergeApprovedSources, setMergeApprovedSources] = useState<any[]>([]);
   const [mergeHistory, setMergeHistory] = useState<any[]>([]);
 
-  // Step 8: Analysis
-  const [analysisResults, setAnalysisResults] = useState<any | null>(null);
-  const [analysisLoading, setAnalysisLoading] = useState(false);
-
-  // Step 9: Procurement Mapping
-  const [procurementMappings, setProcurementMappings] = useState<any[]>([]);
-  const [standardFields, setStandardFields] = useState<any[]>([]);
-  const [viewCategories, setViewCategories] = useState<any>({});
-  const [viewRequirements, setViewRequirements] = useState<any>({});
-
-  // Step 10: Procurement Views
-  const [possibleViews, setPossibleViews] = useState<any>({});
-
   // Group Insights
   const [groupInsights, setGroupInsights] = useState<Record<string, any>>({});
   const [groupReports, setGroupReports] = useState<any[]>([]);
@@ -252,7 +235,6 @@ export default function App() {
       if (s.step) { setStep(s.step); setMaxStepReached(s.maxStepReached || s.step); }
       if (s.excludedTables) setExcludedTables(s.excludedTables);
       if (s.cleaningConfigs) setCleaningConfigs(s.cleaningConfigs);
-      if (s.possibleViews) setPossibleViews(s.possibleViews);
 
       const sid = s.sessionId;
       if (!sid) return;
@@ -303,11 +285,8 @@ export default function App() {
         headerNormDecisions, headerNormStandardFields,
         appendGroups, unassigned, excludedTables,
         appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
-        analysisResults,
         mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources, mergeHistory,
         mergeResult: mergeResult ? { ...mergeResult, csv: undefined } : null,
-        procurementMappings, standardFields, viewCategories, viewRequirements,
-        possibleViews,
       };
       sessionStorage.setItem(STORAGE_KEY, jsonSafeStringify(persistable));
     } catch { /* storage full or serialization error */ }
@@ -319,10 +298,7 @@ export default function App() {
     headerNormDecisions, headerNormStandardFields,
     appendGroups, unassigned, excludedTables,
     appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
-    analysisResults,
     mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources, mergeResult, mergeHistory,
-    procurementMappings, standardFields, viewCategories, viewRequirements,
-    possibleViews,
   ]);
 
   // Warn before page unload when session is active
@@ -354,13 +330,10 @@ export default function App() {
     if (!patch.groupSchema && patch.groupSchemaTableRows) setGroupSchema(patch.groupSchemaTableRows);
     if (patch.mergeBaseGroupId) setMergeBaseGroupId(patch.mergeBaseGroupId);
     if (patch.mergeApprovedSources) setMergeApprovedSources(patch.mergeApprovedSources);
-    if (patch.mergeResult) setMergeResult(patch.mergeResult);
-    if (patch.analysisResults) setAnalysisResults(patch.analysisResults);
-    // date state removed - procurement analysis replaces it
-    if (patch.procurementMappings) setProcurementMappings(patch.procurementMappings);
-    if (patch.standardFields) setStandardFields(patch.standardFields);
-    if (patch.viewCategories) setViewCategories(patch.viewCategories);
-    if (patch.viewRequirements) setViewRequirements(patch.viewRequirements);
+    if (patch.mergeResult) {
+      setMergeResult(patch.mergeResult);
+      if (patch.mergeResult.merge_history) setMergeHistory(patch.mergeResult.merge_history);
+    }
   }, []);
 
   const runOperation = useCallback(async (
@@ -921,120 +894,14 @@ export default function App() {
     setStep(4);
   }, []);
 
-  const handleRunAnalysis = useCallback(async () => {
-    if (!apiKey?.trim()) return;
-    setAnalysisLoading(true);
-    setAnalysisResults(null);
-    addLog("Analysis", "info", "Running procurement analysis...");
-    try {
-      const res = await fetch("/api/analysis/procurement-summary", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, apiKey }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error || "Analysis failed");
-      const data = await res.json();
-      setAnalysisResults(data);
-      addLog("Analysis", "success", "Procurement analysis completed");
-    } catch (err: any) {
-      console.error("Analysis error:", err);
-      addLog("Analysis", "error", err.message);
-    } finally {
-      setAnalysisLoading(false);
-    }
-  }, [sessionId, apiKey, addLog]);
-
-  const handleGenerateProcurementMapping = async () => {
-    if (!apiKey?.trim()) {
-      setError("Please enter your API key to use AI features.");
-      return;
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    setLoading(true);
-    setAiLoading(true);
-    setLoadingMessage("AI is mapping your columns to standard procurement fields...");
-    setError(null);
-    addLog("Procurement Mapping", "info", "AI mapping columns to standard procurement fields...");
-    try {
-      if (controller.signal.aborted) throw new DOMException("Request cancelled.", "AbortError");
-      const exec = await runOperation(
-        "procurement_mapping",
-        {},
-        { mode: "pipeline", autoPrepare: true, persist: true },
-      );
-      const data = exec?.result || {};
-      setProcurementMappings(data.mappings);
-      setStandardFields(data.standardFields);
-      setViewCategories(data.viewCategories);
-      setViewRequirements(data.viewRequirements);
-      addLog("Procurement Mapping", "success", `Mapped ${(data.mappings || []).length} columns`);
-      setStep(9);
-    } catch (err: any) {
-      const message = err?.name === "AbortError" ? "Request cancelled. Please try again." : err.message;
-      setError(message);
-      addLog("Procurement Mapping", "error", message);
-      setLastFailedAction(() => handleGenerateProcurementMapping);
-    } finally {
-      abortControllerRef.current = null;
-      setLoading(false);
-      setAiLoading(false);
-    }
-  };
-
   const handleRegisterMergedGroup = useCallback((groupId: string, groupName: string, groupRow: any) => {
     setGroupSchema((prev) => [...prev, groupRow]);
     setAppendGroups((prev) => [...prev, { group_id: groupId, group_name: groupName }]);
   }, []);
 
-  const DATE_FIELDS = [
-    "Invoice Date", "Goods Receipt Date", "Payment date",
-    "PO Document Date", "Contract End Date", "Contract Start Date",
-  ];
-  const AMOUNT_FIELDS = [
-    "Total Amount paid in Local Currency", "Total Amount paid in Reporting Currency",
-    "PO Total Amount in Local Currency", "PO Total Amount in reporting currency",
-  ];
-
-  const handleAnalyzeViews = () => {
-    const mappedFields = new Set(procurementMappings.map(m => m.best_match).filter(Boolean));
-    const hasAnyDate = DATE_FIELDS.some(f => mappedFields.has(f));
-    const hasAnyAmount = AMOUNT_FIELDS.some(f => mappedFields.has(f));
-    const views: any = {};
-
-    for (const [viewName, requirements] of Object.entries(viewRequirements)) {
-      const reqs = requirements as string[];
-      const missing = reqs.filter(req => !mappedFields.has(req));
-
-      if (missing.length === 0) {
-        views[viewName] = { status: "full", missing: [] };
-      } else {
-        const unresolvable = missing.filter(req => {
-          if (DATE_FIELDS.includes(req) && hasAnyDate) return false;
-          if (AMOUNT_FIELDS.includes(req) && hasAnyAmount) return false;
-          return true;
-        });
-
-        if (unresolvable.length === 0) {
-          views[viewName] = { status: "partial", missing };
-        } else {
-          views[viewName] = { status: "none", missing };
-        }
-      }
-    }
-
-    setPossibleViews(views);
-    const total = Object.keys(views).length;
-    const full = Object.values(views).filter((v: any) => v.status === "full").length;
-    const partial = Object.values(views).filter((v: any) => v.status === "partial").length;
-    addLog("Procurement Views", "success", `Analyzed ${total} view(s), ${full} ready, ${partial} partially ready`);
-    setStep(10);
-  };
-
   const modularOperations: Array<{ id: OperationId; label: string; description: string; requiresApi: boolean; supportsTableSelection?: boolean }> = [
     { id: "header_normalize", label: "Header Normalisation", description: "AI normalises column headers across selected tables", requiresApi: true, supportsTableSelection: true },
     { id: "append", label: "Append Strategy", description: "AI groups, aligns headers, and appends selected tables", requiresApi: true, supportsTableSelection: true },
-    { id: "analysis_run", label: "Analysis", description: "AI analyses the final merged dataset", requiresApi: true },
   ];
 
   const handleModularExecute = async () => {
@@ -1072,7 +939,7 @@ export default function App() {
     }
   };
 
-  const AI_STEPS = new Set([3, 4, 6, 8, 9]);
+  const AI_STEPS = new Set([3, 4, 6]);
 
   const sidebarItems = [
     { name: "Upload + Settings",     steps: [1],      sub: "Manual" },
@@ -1081,12 +948,9 @@ export default function App() {
     { name: "Header Normalisation",  steps: [4],      sub: "AI-assisted" },
     { name: "Data Cleaning",         steps: [5],      sub: "Manual" },
     { name: "Merge",                 steps: [6, 7],   sub: "AI-assisted" },
-    { name: "Analysis",              steps: [8],      sub: "AI-assisted" },
-    { name: "Procurement Mapping",   steps: [9],      sub: "AI-assisted" },
-    { name: "Procurement Views",     steps: [10],     sub: "Manual" },
   ];
 
-  const getDisplayStep = (s: number) => s <= 5 ? s : s <= 7 ? 6 : s - 1;
+  const getDisplayStep = (s: number) => s <= 5 ? s : 6;
   const animationKey = step;
 
   return (
@@ -1467,7 +1331,7 @@ export default function App() {
               </motion.button>
             </div>
 
-            <StepHero step={step} displayStep={getDisplayStep(step)} isAi={AI_STEPS.has(step)} totalSteps={9} />
+            <StepHero step={step} displayStep={getDisplayStep(step)} isAi={AI_STEPS.has(step)} totalSteps={6} />
 
             {error && (
               <motion.div
@@ -1618,36 +1482,12 @@ export default function App() {
                         setMergeApprovedSources={setMergeApprovedSources}
                         mergeHistory={mergeHistory}
                         setMergeHistory={setMergeHistory}
-                        onProceedToAnalysis={() => setStep(8)}
-                        handleGenerateProcurementMapping={handleGenerateProcurementMapping}
                         onRegisterMergedGroup={handleRegisterMergedGroup}
                       />
                     </motion.div>
                   </AnimatePresence>
                 )}
 
-                {step === 8 && (
-                  <Analysis
-                    mergeResult={mergeResult}
-                    analysisResults={analysisResults}
-                    analysisLoading={analysisLoading}
-                    handleRunAnalysis={handleRunAnalysis}
-                    onProceedToProcurement={() => setStep(9)}
-                  />
-                )}
-
-                <Procurement
-                  step={step}
-                  procurementMappings={procurementMappings}
-                  setProcurementMappings={setProcurementMappings}
-                  standardFields={standardFields}
-                  viewCategories={viewCategories}
-                  possibleViews={possibleViews}
-                  handleAnalyzeViews={handleAnalyzeViews}
-                  handleGenerateProcurementMapping={handleGenerateProcurementMapping}
-                  loading={loading}
-                  onSelectChatItem={onSelectChatItem}
-                />
               </motion.div>
             </AnimatePresence>
 

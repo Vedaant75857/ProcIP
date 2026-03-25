@@ -8,12 +8,10 @@ import os
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
-from shared.ai import call_ai_json
 from shared.db import (
     all_registered_tables,
     get_meta,
@@ -25,8 +23,6 @@ from shared.db import (
     table_exists,
     table_row_count,
 )
-from shared.db.stats_ops import column_distinct_values
-
 from appending.service import run_append_execute, run_append_mapping, run_append_plan
 from data_loading.service import (
     build_files_payload_from_db,
@@ -48,16 +44,11 @@ def _load_service(module_qual: str, relative_path: str):
     return mod
 
 
-_analysis = _load_service("summary_analysis_service", os.path.join("analysis", "service.py"))
 _date_std = _load_service("summary_date_std_service", os.path.join("date-standardisation", "service.py"))
 _insights = _load_service("summary_insights_service", os.path.join("insights", "service.py"))
 _hn_root = os.path.normpath(os.path.join(_module_dir, "..", "header-normalisation"))
 _hn_service = _load_service("summary_header_norm_service", os.path.join("..", "header-normalisation", "service.py"))
 _hn_schema = _load_service("summary_header_norm_schema", os.path.join("..", "header-normalisation", "schema_mapper.py"))
-_hn_prompts = _load_service("summary_header_norm_prompts", os.path.join("..", "header-normalisation", "ai", "prompts.py"))
-
-run_analysis = _analysis.run_analysis
-run_procurement_analysis = _analysis.run_procurement_analysis
 detect_date_columns = _date_std.detect_date_columns
 analyze_date_formats = _date_std.analyze_date_formats
 standardize_dates = _date_std.standardize_dates
@@ -67,9 +58,6 @@ run_chat = _insights.run_chat
 run_header_norm = _hn_service.run_header_norm
 apply_header_norm = _hn_service.apply_header_norm
 STANDARD_FIELDS = _hn_schema.STANDARD_FIELDS
-VIEW_CATEGORIES = _hn_schema.VIEW_CATEGORIES
-VIEW_REQUIREMENTS = _hn_schema.VIEW_REQUIREMENTS
-SYSTEM_PROMPT_PROCUREMENT_MAPPING = _hn_prompts.SYSTEM_PROMPT_PROCUREMENT_MAPPING
 
 
 def _sample_formats(samples: list[str]) -> list[str]:
@@ -121,7 +109,6 @@ def _build_chat_context(conn, body: dict) -> str:
     return json.dumps(payload)
 
 
-_PROC_MAPPING_CONCURRENCY = int(os.getenv("PROC_MAPPING_CONCURRENCY", "3"))
 _SESSION_LOCK_GUARD = threading.Lock()
 _SESSION_LOCKS: dict[str, threading.RLock] = {}
 
@@ -147,15 +134,30 @@ def _table_artifact_rows_cols(conn, table_name: str) -> dict[str, int]:
 def _build_merge_result_from_table(conn, table_name: str = "final_merged") -> dict[str, Any] | None:
     if not table_exists(conn, table_name):
         return None
-    shape = _table_artifact_rows_cols(conn, table_name)
-    return {
+    from shared.db.stats_ops import column_stats as compute_column_stats
+    rows_count = int(table_row_count(conn, table_name) or 0)
+    columns_list = read_table_columns(conn, table_name)
+    preview = read_table(conn, table_name, 50)
+    col_stats = compute_column_stats(conn, table_name)
+
+    merge_history = get_meta(conn, "merge_history") or []
+    latest = merge_history[-1] if merge_history else None
+    skipped = not bool(get_meta(conn, "mergeApprovedSources"))
+
+    result: dict[str, Any] = {
         "final_table": table_name,
-        "final_shape": shape,
-        "report": {"final_shape": shape},
-        "preview": read_table(conn, table_name, 50),
-        "csv": None,
-        "csvTruncated": True,
+        "rows": rows_count,
+        "cols": len(columns_list),
+        "columns": columns_list,
+        "column_stats": col_stats,
+        "preview": preview,
+        "skipped": skipped,
     }
+    if latest:
+        result["version"] = latest.get("version")
+        result["file_label"] = latest.get("file_label")
+        result["merge_history"] = merge_history
+    return result
 
 
 def _auto_header_norm_decisions(conn) -> dict[str, list[dict[str, Any]]]:
@@ -186,84 +188,6 @@ def _auto_header_norm_decisions(conn) -> dict[str, list[dict[str, Any]]]:
         if col_decisions:
             out[tk] = col_decisions
     return out
-
-
-def _run_procurement_mapping(conn, api_key: str) -> dict[str, Any]:
-    if not table_exists(conn, "final_merged"):
-        raise ValueError("Session or final data not found.")
-
-    columns = read_table_columns(conn, "final_merged")
-    columns_context = [
-        {"name": col, "examples": column_distinct_values(conn, "final_merged", col, 50)}
-        for col in columns
-    ]
-    standard_fields_payload = [
-        {"name": f["name"], "description": f.get("description", "")}
-        for f in STANDARD_FIELDS
-    ]
-
-    all_results: list[dict[str, Any]] = []
-    for i in range(0, len(columns_context), _PROC_MAPPING_CONCURRENCY):
-        chunk = columns_context[i : i + _PROC_MAPPING_CONCURRENCY]
-
-        def _call(col_ctx: dict[str, Any]) -> dict[str, Any]:
-            return call_ai_json(
-                SYSTEM_PROMPT_PROCUREMENT_MAPPING,
-                {
-                    "standard_fields": standard_fields_payload,
-                    "column": {
-                        "name": col_ctx["name"],
-                        "examples": col_ctx["examples"],
-                    },
-                },
-                api_key,
-            )
-
-        with ThreadPoolExecutor(max_workers=_PROC_MAPPING_CONCURRENCY) as executor:
-            futures = {executor.submit(_call, c): c for c in chunk}
-            for future in as_completed(futures):
-                col_ctx = futures[future]
-                try:
-                    result = future.result()
-                    mapping = result.get("mappings", [result])[0] if isinstance(result, dict) else result
-                    if isinstance(mapping, dict):
-                        all_results.append(
-                            {
-                                "uploaded_column": mapping.get("uploaded_column", col_ctx["name"]),
-                                "best_match": mapping.get("best_match"),
-                                "confidence": mapping.get("confidence", 0),
-                                "top_3_alternatives": mapping.get("top_3_alternatives", []),
-                                "reasoning": mapping.get("reasoning", ""),
-                            }
-                        )
-                    else:
-                        all_results.append(
-                            {
-                                "uploaded_column": col_ctx["name"],
-                                "best_match": None,
-                                "confidence": 0,
-                                "top_3_alternatives": [],
-                                "reasoning": "",
-                            }
-                        )
-                except Exception:
-                    all_results.append(
-                        {
-                            "uploaded_column": col_ctx["name"],
-                            "best_match": None,
-                            "confidence": 0,
-                            "top_3_alternatives": [],
-                            "reasoning": "",
-                        }
-                    )
-
-    set_meta(conn, "procMappings", all_results)
-    return {
-        "mappings": all_results,
-        "standardFields": STANDARD_FIELDS,
-        "viewCategories": VIEW_CATEGORIES,
-        "viewRequirements": VIEW_REQUIREMENTS,
-    }
 
 
 _OPERATION_SPECS: dict[str, dict[str, Any]] = {
@@ -302,13 +226,6 @@ _OPERATION_SPECS: dict[str, dict[str, Any]] = {
         "auto_prereqs": ["append_mapping"],
         "produces": ["groupSchemaTableRows"],
     },
-    "analysis_run": {
-        "required_inputs": [],
-        "required_artifacts": ["table:final_merged"],
-        "requires_api_key": True,
-        "auto_prereqs": [],
-        "produces": ["analysisLast"],
-    },
     "date_detect": {
         "required_inputs": [],
         "required_artifacts": ["table:final_merged"],
@@ -329,13 +246,6 @@ _OPERATION_SPECS: dict[str, dict[str, Any]] = {
         "requires_api_key": False,
         "auto_prereqs": [],
         "produces": ["dateStandardizeLast"],
-    },
-    "procurement_mapping": {
-        "required_inputs": [],
-        "required_artifacts": ["table:final_merged"],
-        "requires_api_key": True,
-        "auto_prereqs": [],
-        "produces": ["procMappings"],
     },
     "append_datasets": {
         "required_inputs": ["tableKeys"],
@@ -376,9 +286,6 @@ _OPERATION_INPUT_HINTS: dict[str, dict[str, Any]] = {
         "appendGroupMappings": {"type": "array", "required": False, "description": "Group mappings to execute."},
         "unassignedTables": {"type": "array", "required": False, "description": "Optional excluded table keys."},
     },
-    "analysis_run": {
-        "columns": {"type": "array", "required": False, "description": "Optional subset of columns for analysis."},
-    },
     "date_detect": {
         "tableName": {"type": "string", "required": False, "description": "Table to inspect (default: final_merged)."},
     },
@@ -391,7 +298,6 @@ _OPERATION_INPUT_HINTS: dict[str, dict[str, Any]] = {
         "columns": {"type": "array", "required": True, "description": "Columns to standardize."},
         "targetFormat": {"type": "string", "required": False, "description": "YYYY-MM-DD|ISO|DD/MM/YYYY|MM/DD/YYYY"},
     },
-    "procurement_mapping": {},
     "append_datasets": {
         "tableKeys": {"type": "array", "required": True, "description": "Table keys to append directly."},
         "groupId": {"type": "string", "required": False, "description": "Optional output group id."},
@@ -516,14 +422,6 @@ def _execute_operation(conn, session_id: str, operation: str, input_data: dict[s
             ]
         return run_append_execute(conn, mappings, unassigned)
 
-    if operation == "analysis_run":
-        columns = input_data.get("columns") or []
-        if not isinstance(columns, list):
-            columns = []
-        result = run_analysis(conn, session_id, str(api_key or "").strip(), columns=columns)
-        set_meta(conn, "analysisLast", result)
-        return result
-
     if operation == "date_detect":
         table_name = str(input_data.get("tableName") or "final_merged")
         result = detect_date_columns(conn, table_name)
@@ -549,10 +447,6 @@ def _execute_operation(conn, session_id: str, operation: str, input_data: dict[s
         out = [standardize_dates(conn, table_name, str(col), target) for col in columns]
         result = {"results": out, "targetFormat": target}
         set_meta(conn, "dateStandardizeLast", result)
-        return result
-
-    if operation == "procurement_mapping":
-        result = _run_procurement_mapping(conn, str(api_key or "").strip())
         return result
 
     if operation == "append_datasets":
@@ -603,14 +497,9 @@ def _build_state_patch(conn) -> dict[str, Any]:
         "groupSchemaTableRows": get_meta(conn, "groupSchemaTableRows") or [],
         "mergeBaseGroupId": get_meta(conn, "mergeBaseGroupId") or "",
         "mergeApprovedSources": get_meta(conn, "mergeApprovedSources") or [],
-        "analysisResults": get_meta(conn, "analysisLast"),
         "dateDetectResult": get_meta(conn, "dateDetectLast"),
         "dateAnalyzeResult": get_meta(conn, "dateAnalyzeLast"),
         "dateStandardizeResult": get_meta(conn, "dateStandardizeLast"),
-        "procurementMappings": get_meta(conn, "procMappings") or [],
-        "standardFields": STANDARD_FIELDS,
-        "viewCategories": VIEW_CATEGORIES,
-        "viewRequirements": VIEW_REQUIREMENTS,
     }
     merged = _build_merge_result_from_table(conn, "final_merged")
     if merged:
@@ -634,8 +523,6 @@ def _build_artifact_summary(conn) -> dict[str, Any]:
             "groupSchemaTableRows": bool(get_meta(conn, "groupSchemaTableRows")),
             "mergeBaseGroupId": bool(get_meta(conn, "mergeBaseGroupId")),
             "mergeApprovedSources": bool(get_meta(conn, "mergeApprovedSources")),
-            "analysisLast": bool(get_meta(conn, "analysisLast")),
-            "procMappings": bool(get_meta(conn, "procMappings")),
         },
         "tables": tables,
         "final_merged": _table_artifact_rows_cols(conn, "final_merged"),
@@ -828,27 +715,6 @@ def execution_run():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
-@summary_bp.route("/analysis/run", methods=["POST"])
-def analysis_run():
-    try:
-        body = request.get_json(force=True, silent=True) or {}
-        payload, status = execute_operation_kernel(
-            session_id=body.get("sessionId"),
-            operation="analysis_run",
-            api_key=body.get("apiKey"),
-            input_data={"columns": body.get("columns") or []},
-            options={"mode": "pipeline", "autoPrepare": True, "persist": True},
-            request_id=request.headers.get("X-Request-Id"),
-        )
-        if status != 200:
-            return jsonify({"error": payload.get("error"), "missing_requirements": payload.get("missing_requirements")}), status
-        return jsonify(payload.get("result") or {})
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 500
-
-
 @summary_bp.route("/date-detect", methods=["POST"])
 def date_detect():
     try:
@@ -972,26 +838,6 @@ def date_standardize():
                 }
             )
         return jsonify({"columns": shaped, "results": results, "targetFormat": target_format})
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 500
-
-
-@summary_bp.route("/analysis/procurement-summary", methods=["POST"])
-def procurement_summary():
-    try:
-        body = request.get_json(force=True, silent=True) or {}
-        session_id = body.get("sessionId")
-        api_key = body.get("apiKey")
-        if not session_id:
-            return jsonify({"error": "Missing sessionId"}), 400
-        if not (api_key and str(api_key).strip()):
-            return jsonify({"error": "Missing API key"}), 400
-        conn = get_session_db(session_id)
-        result = run_procurement_analysis(conn, session_id, str(api_key).strip())
-        set_meta(conn, "procurementAnalysis", result)
-        return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:  # noqa: BLE001

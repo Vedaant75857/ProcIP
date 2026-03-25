@@ -44,9 +44,9 @@ export interface MergingProps {
   mergeCommonColumns: any[];
   setMergeCommonColumns: (v: any[]) => void;
   mergeSelectedKeys: Array<{ base_col: string; source_col: string }>;
-  setMergeSelectedKeys: (v: Array<{ base_col: string; source_col: string }>) => void;
+  setMergeSelectedKeys: React.Dispatch<React.SetStateAction<Array<{ base_col: string; source_col: string }>>>;
   mergePullColumns: string[];
-  setMergePullColumns: (v: string[]) => void;
+  setMergePullColumns: React.Dispatch<React.SetStateAction<string[]>>;
   mergeSimulation: any;
   setMergeSimulation: (v: any) => void;
   mergeValidationReport: any;
@@ -57,8 +57,6 @@ export interface MergingProps {
   setMergeApprovedSources: (v: any[]) => void;
   mergeHistory: any[];
   setMergeHistory: (v: any[]) => void;
-  onProceedToAnalysis: () => void;
-  handleGenerateProcurementMapping: () => void;
   onRegisterMergedGroup: (groupId: string, groupName: string, groupRow: any) => void;
 }
 
@@ -100,7 +98,6 @@ export default function Merging(props: MergingProps) {
     mergeResult, setMergeResult,
     mergeApprovedSources, setMergeApprovedSources,
     mergeHistory, setMergeHistory,
-    onProceedToAnalysis, handleGenerateProcurementMapping,
     onRegisterMergedGroup,
   } = props;
 
@@ -403,6 +400,7 @@ export default function Merging(props: MergingProps) {
           }
         }
       }
+      reader.releaseLock();
     } catch (err: any) {
       setError(err.message);
       addLog("Merge", "error", err.message);
@@ -494,6 +492,7 @@ export default function Merging(props: MergingProps) {
       if (!res.ok) throw new Error((await res.json()).error || "Skip merge failed");
       const data = await res.json();
       setMergeResult(data);
+      if (data.merge_history) setMergeHistory(data.merge_history);
       addLog("Merge", "success", `Final file: ${data.rows} rows × ${data.cols} columns (no merge)`);
       setStep(7);
     } catch (err: any) {
@@ -506,15 +505,15 @@ export default function Merging(props: MergingProps) {
 
   // --- Download helpers ---
 
-  const downloadStepXlsx = useCallback(async () => {
+  const downloadStepCsv = useCallback(async () => {
     if (!sessionId || !currentSourceGroupId) {
       setError("Cannot download — no active merge session or source group.");
       return;
     }
     try {
-      const res = await fetch(`/api/merge/download-step-xlsx?sessionId=${encodeURIComponent(sessionId)}&sourceGroupId=${encodeURIComponent(currentSourceGroupId)}`);
+      const res = await fetch(`/api/merge/download-step-csv?sessionId=${encodeURIComponent(sessionId)}&sourceGroupId=${encodeURIComponent(currentSourceGroupId)}`);
       if (!res.ok) {
-        let msg = "Failed to download step xlsx";
+        let msg = "Failed to download step CSV";
         try { const j = await res.json(); msg = j.error || msg; } catch { /* not json */ }
         throw new Error(msg);
       }
@@ -523,13 +522,13 @@ export default function Merging(props: MergingProps) {
       const a = document.createElement("a");
       a.href = url;
       const srcName = groupNameMap[currentSourceGroupId] || currentSourceGroupId;
-      a.download = `step_merge_${srcName}.xlsx`;
+      a.download = `step_merge_${srcName}.csv`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (err: any) {
-      setError(err.message || "Step xlsx download failed");
+      setError(err.message || "Step CSV download failed");
     }
   }, [sessionId, currentSourceGroupId, groupNameMap, setError]);
 
@@ -704,12 +703,12 @@ export default function Merging(props: MergingProps) {
         mergeHistory={mergeHistory}
         groupNameMap={groupNameMap}
         onDownloadXlsx={downloadXlsx}
+        onDownloadCsv={downloadCsv}
         onDownloadAllZip={downloadAllZip}
         onDownloadReport={downloadReport}
         onRedoMerge={handleRedoMerge}
         onMergeAgain={handleMergeAgain}
         mergeAgainLoading={mergeAgainLoading}
-        onProceedToAnalysis={onProceedToAnalysis}
       />
     );
   }
@@ -1323,7 +1322,7 @@ export default function Merging(props: MergingProps) {
                 ? `Approve & Continue (${mergeCurrentSourceIdx + 2}/${mergeSourceGroupIds.length})`
                 : "Approve & Finalize"}
             </PrimaryButton>
-            <SecondaryButton onClick={downloadStepXlsx}>
+            <SecondaryButton onClick={downloadStepCsv}>
               <Download className="w-4 h-4" />
               Download This Result
             </SecondaryButton>

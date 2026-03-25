@@ -4,7 +4,8 @@
     "FORNITORE_NOME",
     "FILE_NAME",
     "SUPPLIERNAME",
-    "SUPPLIERTYPE"
+    "SUPPLIERTYPE",
+    "CO#_NAME"
   ],
   "Invoice Number": [
     "FATT DATA DOC.",
@@ -34,7 +35,10 @@
     "DESCRIPTION2",
     "PARTFLEXTEXT1",
     "PARTFLEXTEXT2",
-    "PARTFLEXTEXT3"
+    "PARTFLEXTEXT3",
+    "COMMODITY DESCRIPTION",
+    "DOC TYPE DESC",
+    "SCHTYPE DESC"
   ],
   "Total Amount paid in Reporting Currency": [
     "DIVISA DI GRUPPO",
@@ -44,7 +48,8 @@
     "IMPORTO_DIVISA_DOCUMENTO",
     "IMPORTO_DIVISA_LOCALE",
     "AMOUNT IN LOC.CRCY 2",
-    "AMOUNT IN LOCAL CRCY"
+    "AMOUNT IN LOCAL CRCY",
+    "GROSS AMOUNT"
   ],
   "Vendor Code": [
     "FORNITORE"
@@ -64,14 +69,19 @@
   "Debit/ Credit Indicator": [
     "TYPE",
     "STOCKINDICATOR",
-    "ORDERROUTINGTYPE"
+    "ORDERROUTINGTYPE",
+    "PER/ CORP"
   ],
   "Local Currency Code": [
     "COCD",
     "CRCY",
     "AMOUNT IN DOC. CURR.",
     "LCURR",
-    "STANDARDCOSTCURRENCY"
+    "STANDARDCOSTCURRENCY",
+    "CUR COD",
+    "MINORITY CODE",
+    "CAT CDE",
+    "SCH TYP"
   ],
   "Fiscal Year": [
     "YEAR/MONTH"
@@ -82,14 +92,16 @@
   ],
   "PO Document Date": [
     "DOC. DATE",
-    "ORDEREDDATE"
+    "ORDEREDDATE",
+    "DUE DATE"
   ],
   "Invoice Date": [
     "DOCUMENTNO"
   ],
   "Transaction ID": [
     "REFERENCE",
-    "REFERENCE KEY 3"
+    "REFERENCE KEY 3",
+    "JDE DOCUMENT NUMBER"
   ],
   "Cost Center Code": [
     "COST CTR",
@@ -97,7 +109,8 @@
     "COSTCENTERNAME"
   ],
   "Payment date": [
-    "CLEARING"
+    "CLEARING",
+    "PAY INST"
   ],
   "PO Manufacturer name": [
     "USER NAME",
@@ -110,7 +123,8 @@
     "SITEID",
     "SITENAME",
     "STREETADDRESS",
-    "REQUESTERID"
+    "REQUESTERID",
+    "MAILING NAME"
   ],
   "Company Name": [
     "COMPANYLEVEL0",
@@ -133,7 +147,9 @@
     "EXTRAPOKEY",
     "MATERIALCOMPOSITION",
     "OPENPOINDICATOR",
-    "SUPERVISORID"
+    "SUPERVISORID",
+    "PARENT / GROUP TODAY",
+    "ADDRESS LINE 1 - ADD1"
   ],
   "Contract ID": [
     "CONTRACTNAME",
@@ -144,7 +160,8 @@
   ],
   "PO Material Group Description": [
     "COMMODITYNAME",
-    "COMMODITYTYPE"
+    "COMMODITYTYPE",
+    "COMMODITY ROLL UP"
   ],
   "PO Manufacturer part number": [
     "REVISIONNUMBER"
@@ -165,7 +182,10 @@
     "ANNUMBER"
   ],
   "Payment Terms": [
-    "PAYMENTTYPE"
+    "PAYMENTTYPE",
+    "PYMT TERMS",
+    "PAYMENT TERMS - A/P",
+    "PMT TRM"
   ],
   "Vendor Diversity": [
     "MINORITYOWNED",
@@ -184,5 +204,11 @@
     "CERTIFIEDMINORITYOWNED",
     "DIVERSITYENTERPRISE",
     "MINORITYOWNEDENTERPRISE"
+  ],
+  "Contract Start Date": [
+    "START EFFECTIVE DATE"
+  ],
+  "Vendor Address": [
+    "LONG ADDRESS"
   ]
 }

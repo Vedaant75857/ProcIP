@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import time
+import zipfile
 from typing import Any
+
+from openpyxl import Workbook
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from shared.db import (
+    get_meta,
     get_session_db,
     lookup_sql_name,
     read_table,
     read_table_columns,
+    register_table,
+    set_meta,
     table_exists,
     table_row_count,
     quote_id,
@@ -117,7 +125,8 @@ def simulate():
         if not base_sql or not source_sql:
             return jsonify({"error": "Invalid group ID(s)"}), 400
 
-        result = simulate_join(conn, base_sql, source_sql, key_pairs)
+        pull_columns = body.get("pullColumns", [])
+        result = simulate_join(conn, base_sql, source_sql, key_pairs, pull_columns=pull_columns)
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -143,17 +152,35 @@ def execute():
         if not base_sql or not source_sql:
             return jsonify({"error": "Invalid group ID(s)"}), 400
 
-        merge_log = execute_merge(
-            conn, session_id, base_sql, source_sql, key_pairs, pull_columns, source_group_id
-        )
-        report = generate_validation_report(
-            conn, base_sql, source_sql, merge_log["result_table"], merge_log
-        )
+        def _sse(payload: dict) -> str:
+            return f"data: {json.dumps(payload)}\n\n"
 
-        return jsonify({
-            "merge_log": merge_log,
-            "validation_report": report,
-        })
+        def _stream():
+            try:
+                yield _sse({"stage": "dedup", "progress": 15, "message": "Deduplicating source & executing join..."})
+
+                merge_log = execute_merge(
+                    conn, session_id, base_sql, source_sql, key_pairs, pull_columns, source_group_id
+                )
+
+                yield _sse({"stage": "stats", "progress": 55, "message": "Computing column statistics..."})
+
+                report = generate_validation_report(
+                    conn, base_sql, source_sql, merge_log["result_table"], merge_log
+                )
+
+                yield _sse({
+                    "stage": "done", "progress": 100, "message": "Merge complete!",
+                    "result": {"merge_log": merge_log, "validation_report": report},
+                })
+            except Exception as exc:
+                yield _sse({"stage": "error", "progress": 0, "message": str(exc)})
+
+        return Response(
+            stream_with_context(_stream()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
@@ -197,6 +224,50 @@ def skip():
         return jsonify({"error": str(exc)}), 500
 
 
+@merging_bp.route("/merge/register-merged-group", methods=["POST"])
+def register_merged_group():
+    """Copy final_merged into a new group so it can be used in subsequent merges."""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        group_name = body.get("groupName", "Merged Output")
+        if not session_id:
+            return jsonify({"error": "Missing sessionId"}), 400
+
+        conn = get_session_db(session_id)
+        if not table_exists(conn, "final_merged"):
+            return jsonify({"error": "No merged data found"}), 404
+
+        group_id = f"merged_{int(time.time() * 1000)}"
+        sql_name = f"merged_output_{int(time.time())}"
+
+        conn.execute(f"CREATE TABLE {quote_id(sql_name)} AS SELECT * FROM {quote_id('final_merged')}")
+        conn.commit()
+        register_table(conn, group_id, sql_name)
+
+        columns = read_table_columns(conn, sql_name)
+        rows = table_row_count(conn, sql_name)
+        new_group_row = {
+            "group_id": group_id,
+            "group_name": group_name,
+            "rows": rows,
+            "columns": columns,
+        }
+
+        schema = get_meta(conn, "groupSchemaTableRows") or []
+        schema.append(new_group_row)
+        set_meta(conn, "groupSchemaTableRows", schema)
+
+        return jsonify({
+            "group_id": group_id,
+            "group_name": group_name,
+            "group_row": new_group_row,
+            "groupSchema": schema,
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @merging_bp.route("/merge/download-csv", methods=["GET"])
 def download_csv():
     try:
@@ -234,6 +305,156 @@ def download_csv():
                 "Content-Disposition": 'attachment; filename="final_merged.csv"',
             },
         )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+def _table_to_xlsx_bytes(conn, table_name: str) -> bytes:
+    """Write a SQLite table into an in-memory xlsx buffer and return bytes."""
+    columns = read_table_columns(conn, table_name)
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet()
+    ws.append(columns)
+    cursor = conn.execute(f"SELECT * FROM {quote_id(table_name)}")
+    while True:
+        rows = cursor.fetchmany(2000)
+        if not rows:
+            break
+        for row in rows:
+            ws.append([row[c] for c in columns])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+@merging_bp.route("/merge/download-step-xlsx", methods=["GET"])
+def download_step_xlsx():
+    """Download a per-source _merge_step_ table as xlsx immediately after execution."""
+    try:
+        session_id = request.args.get("sessionId")
+        source_group_id = request.args.get("sourceGroupId")
+        if not session_id or not source_group_id:
+            return jsonify({"error": "sessionId and sourceGroupId are required"}), 400
+        conn = get_session_db(session_id)
+        step_table = f"_merge_step_{source_group_id}"
+        if not table_exists(conn, step_table):
+            return jsonify({"error": "Step table not found — not yet executed or already finalized"}), 404
+
+        xlsx_bytes = _table_to_xlsx_bytes(conn, step_table)
+
+        schema = get_meta(conn, "groupSchemaTableRows") or []
+        name_map = {g["group_id"]: g.get("group_name", g["group_id"]) for g in schema}
+        src_name = name_map.get(source_group_id, source_group_id)
+        safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in src_name)
+        filename = f"step_merge_{safe_name}.xlsx"
+
+        return Response(
+            xlsx_bytes,
+            headers={
+                "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/download-xlsx", methods=["GET"])
+def download_xlsx():
+    """Download a finalized versioned merge output as xlsx."""
+    try:
+        session_id = request.args.get("sessionId")
+        version_str = request.args.get("version")
+        if not session_id:
+            return jsonify({"error": "sessionId query parameter is required"}), 400
+        conn = get_session_db(session_id)
+
+        merge_history = get_meta(conn, "merge_history") or []
+        if not merge_history:
+            if not table_exists(conn, "final_merged"):
+                return jsonify({"error": "No merged data found"}), 404
+            xlsx_bytes = _table_to_xlsx_bytes(conn, "final_merged")
+            return Response(
+                xlsx_bytes,
+                headers={
+                    "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "Content-Disposition": 'attachment; filename="final_merged.xlsx"',
+                },
+            )
+
+        if version_str:
+            version = int(version_str)
+            entry = next((e for e in merge_history if e["version"] == version), None)
+        else:
+            entry = merge_history[-1]
+
+        if not entry:
+            return jsonify({"error": f"Version {version_str} not found in merge history"}), 404
+
+        tbl = entry["table_name"]
+        if not table_exists(conn, tbl):
+            return jsonify({"error": f"Table {tbl} no longer exists"}), 404
+
+        xlsx_bytes = _table_to_xlsx_bytes(conn, tbl)
+        filename = entry.get("file_label", f"merge_v{entry['version']}.xlsx")
+
+        return Response(
+            xlsx_bytes,
+            headers={
+                "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/download-all", methods=["GET"])
+def download_all():
+    """Download all versioned merge outputs as a single ZIP of xlsx files."""
+    try:
+        session_id = request.args.get("sessionId")
+        if not session_id:
+            return jsonify({"error": "sessionId query parameter is required"}), 400
+        conn = get_session_db(session_id)
+
+        merge_history = get_meta(conn, "merge_history") or []
+        if not merge_history:
+            return jsonify({"error": "No merge history found"}), 404
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for entry in merge_history:
+                tbl = entry["table_name"]
+                if not table_exists(conn, tbl):
+                    continue
+                xlsx_bytes = _table_to_xlsx_bytes(conn, tbl)
+                filename = entry.get("file_label", f"merge_v{entry['version']}.xlsx")
+                zf.writestr(filename, xlsx_bytes)
+        zip_buf.seek(0)
+
+        return Response(
+            zip_buf.getvalue(),
+            headers={
+                "Content-Type": "application/zip",
+                "Content-Disposition": 'attachment; filename="all_merge_outputs.zip"',
+            },
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/history", methods=["GET"])
+def merge_history_route():
+    """Return the merge history metadata list."""
+    try:
+        session_id = request.args.get("sessionId")
+        if not session_id:
+            return jsonify({"error": "sessionId query parameter is required"}), 400
+        conn = get_session_db(session_id)
+        merge_history = get_meta(conn, "merge_history") or []
+        return jsonify({"merge_history": merge_history})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

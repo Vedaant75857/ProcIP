@@ -136,6 +136,7 @@ export default function App() {
   const [mergeValidationReport, setMergeValidationReport] = useState<any>(null);
   const [mergeResult, setMergeResult] = useState<any>(null);
   const [mergeApprovedSources, setMergeApprovedSources] = useState<any[]>([]);
+  const [mergeHistory, setMergeHistory] = useState<any[]>([]);
 
   // Step 8: Analysis
   const [analysisResults, setAnalysisResults] = useState<any | null>(null);
@@ -303,7 +304,7 @@ export default function App() {
         appendGroups, unassigned, excludedTables,
         appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
         analysisResults,
-        mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources,
+        mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources, mergeHistory,
         mergeResult: mergeResult ? { ...mergeResult, csv: undefined } : null,
         procurementMappings, standardFields, viewCategories, viewRequirements,
         possibleViews,
@@ -319,7 +320,7 @@ export default function App() {
     appendGroups, unassigned, excludedTables,
     appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
     analysisResults,
-    mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources, mergeResult,
+    mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources, mergeResult, mergeHistory,
     procurementMappings, standardFields, viewCategories, viewRequirements,
     possibleViews,
   ]);
@@ -981,6 +982,11 @@ export default function App() {
     }
   };
 
+  const handleRegisterMergedGroup = useCallback((groupId: string, groupName: string, groupRow: any) => {
+    setGroupSchema((prev) => [...prev, groupRow]);
+    setAppendGroups((prev) => [...prev, { group_id: groupId, group_name: groupName }]);
+  }, []);
+
   const DATE_FIELDS = [
     "Invoice Date", "Goods Receipt Date", "Payment date",
     "PO Document Date", "Contract End Date", "Contract Start Date",
@@ -1610,8 +1616,11 @@ export default function App() {
                         setMergeResult={setMergeResult}
                         mergeApprovedSources={mergeApprovedSources}
                         setMergeApprovedSources={setMergeApprovedSources}
+                        mergeHistory={mergeHistory}
+                        setMergeHistory={setMergeHistory}
                         onProceedToAnalysis={() => setStep(8)}
                         handleGenerateProcurementMapping={handleGenerateProcurementMapping}
+                        onRegisterMergedGroup={handleRegisterMergedGroup}
                       />
                     </motion.div>
                   </AnimatePresence>

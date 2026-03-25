@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from typing import Any
 
 from shared.ai import call_ai_json
@@ -35,6 +36,30 @@ from merging.column_metadata import (
 
 def _normalize_col(name: str) -> str:
     return name.lower().strip().replace(" ", "_").replace("-", "_")
+
+
+def _norm_key_expr(col_ref: str) -> str:
+    """Normalize a column reference for join key comparison: trim + lowercase."""
+    return f"TRIM(LOWER(CAST({col_ref} AS TEXT)))"
+
+
+def _parse_explain_plan(plan_rows: list) -> dict[str, Any]:
+    """Parse EXPLAIN QUERY PLAN output into a simplified summary."""
+    details: list[str] = []
+    index_used = False
+    warnings: list[str] = []
+    for row in plan_rows:
+        detail = row["detail"] if hasattr(row, "keys") else (row[3] if len(row) > 3 else str(row))
+        detail_str = str(detail)
+        details.append(detail_str)
+        upper = detail_str.upper()
+        if "USING INDEX" in upper or "USING COVERING INDEX" in upper:
+            index_used = True
+        if "SCAN TABLE" in upper and "USING" not in upper:
+            parts = detail_str.split("SCAN TABLE")[-1].strip().split()
+            tbl = parts[0] if parts else "unknown"
+            warnings.append(f"Full table scan on {tbl}")
+    return {"details": details, "index_used": index_used, "warnings": warnings}
 
 
 # ---------------------------------------------------------------------------
@@ -334,45 +359,69 @@ def simulate_join(
     base_sql: str,
     source_sql: str,
     key_pairs: list[dict[str, str]],
+    pull_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     if not key_pairs:
         return {"error": "No key pairs provided."}
 
-    base_key_exprs, source_key_exprs = [], []
-    for kp in key_pairs:
-        base_key_exprs.append(f"CAST({quote_id(kp['base_col'])} AS TEXT)")
-        source_key_exprs.append(f"CAST({quote_id(kp['source_col'])} AS TEXT)")
-
-    base_key = " || '|||' || ".join(base_key_exprs)
-    source_key = " || '|||' || ".join(source_key_exprs)
     bt, st = quote_id(base_sql), quote_id(source_sql)
 
-    # Single CTE-based query computes all metrics in 2 scans instead of 5
-    row = conn.execute(f"""
-        WITH bk AS (SELECT {base_key} AS k FROM {bt}),
-             sk AS (SELECT {source_key} AS k FROM {st}),
-             sk_agg AS (
-                 SELECT k, COUNT(*) AS c FROM sk GROUP BY k
-             ),
-             dk AS (SELECT DISTINCT k FROM bk),
-             ds AS (SELECT DISTINCT k FROM sk),
-             matched AS (SELECT COUNT(*) AS cnt FROM bk WHERE k IN (SELECT k FROM ds)),
-             unmatched_src AS (
-                 SELECT COUNT(*) AS cnt FROM (SELECT k FROM ds EXCEPT SELECT k FROM dk)
-             ),
-             dup_src AS (SELECT COUNT(*) AS cnt FROM sk_agg WHERE c > 1),
-             joined AS (
-                 SELECT COUNT(*) AS cnt FROM bk
-                 INNER JOIN sk_agg ON bk.k = sk_agg.k
-             )
-        SELECT
-            (SELECT COUNT(*) FROM bk) AS base_rows,
-            (SELECT COUNT(*) FROM sk) AS source_rows,
-            (SELECT cnt FROM matched) AS matched_base,
-            (SELECT cnt FROM unmatched_src) AS unmatched_source,
-            (SELECT cnt FROM dup_src) AS dup_source,
-            (SELECT cnt FROM joined) AS joined_rows
-    """).fetchone()
+    # Normalized composite key expressions
+    base_key_exprs = [_norm_key_expr(quote_id(kp["base_col"])) for kp in key_pairs]
+    source_key_exprs = [_norm_key_expr(quote_id(kp["source_col"])) for kp in key_pairs]
+    base_key = " || '|||' || ".join(base_key_exprs)
+    source_key = " || '|||' || ".join(source_key_exprs)
+
+    # Build slim temp tables with pre-computed key (only reads key + pull columns)
+    source_cols = read_table_columns(conn, source_sql)
+    src_key_set = {kp["source_col"] for kp in key_pairs}
+    pull_set = [c for c in (pull_columns or []) if c in source_cols and c not in src_key_set]
+    slim_src_cols = ", ".join(quote_id(c) for c in list(src_key_set) + pull_set)
+
+    base_key_set = {kp["base_col"] for kp in key_pairs}
+    slim_base_cols = ", ".join(quote_id(c) for c in base_key_set)
+
+    conn.execute("DROP TABLE IF EXISTS _sim_base")
+    conn.execute("DROP TABLE IF EXISTS _sim_src")
+    conn.execute(f"CREATE TEMP TABLE _sim_base AS SELECT {slim_base_cols} FROM {bt}")
+    conn.execute(f"CREATE TEMP TABLE _sim_src AS SELECT {slim_src_cols} FROM {st}")
+
+    # Composite indexes on the normalized key expressions
+    base_idx = ", ".join(_norm_key_expr(quote_id(c)) for c in base_key_set)
+    src_idx = ", ".join(_norm_key_expr(quote_id(c)) for c in src_key_set)
+    conn.execute(f"CREATE INDEX _idx_sim_base ON _sim_base ({base_idx})")
+    conn.execute(f"CREATE INDEX _idx_sim_src ON _sim_src ({src_idx})")
+
+    try:
+        # CTE runs against slim indexed tables
+        row = conn.execute(f"""
+            WITH bk AS (SELECT {base_key} AS k FROM _sim_base),
+                 sk AS (SELECT {source_key} AS k FROM _sim_src),
+                 sk_agg AS (
+                     SELECT k, COUNT(*) AS c FROM sk GROUP BY k
+                 ),
+                 dk AS (SELECT DISTINCT k FROM bk),
+                 ds AS (SELECT DISTINCT k FROM sk),
+                 matched AS (SELECT COUNT(*) AS cnt FROM bk WHERE k IN (SELECT k FROM ds)),
+                 unmatched_src AS (
+                     SELECT COUNT(*) AS cnt FROM (SELECT k FROM ds EXCEPT SELECT k FROM dk)
+                 ),
+                 dup_src AS (SELECT COUNT(*) AS cnt FROM sk_agg WHERE c > 1),
+                 joined AS (
+                     SELECT COUNT(*) AS cnt FROM bk
+                     INNER JOIN sk_agg ON bk.k = sk_agg.k
+                 )
+            SELECT
+                (SELECT COUNT(*) FROM bk) AS base_rows,
+                (SELECT COUNT(*) FROM sk) AS source_rows,
+                (SELECT cnt FROM matched) AS matched_base,
+                (SELECT cnt FROM unmatched_src) AS unmatched_source,
+                (SELECT cnt FROM dup_src) AS dup_source,
+                (SELECT cnt FROM joined) AS joined_rows
+        """).fetchone()
+    finally:
+        conn.execute("DROP TABLE IF EXISTS _sim_base")
+        conn.execute("DROP TABLE IF EXISTS _sim_src")
 
     base_rows = row["base_rows"]
     source_rows = row["source_rows"]
@@ -416,36 +465,53 @@ def execute_merge(
     base_cols = read_table_columns(conn, base_sql)
     source_cols = read_table_columns(conn, source_sql)
 
-    # Auto-deduplicate source (keep first row per key group)
-    source_key_exprs = []
-    for kp in key_pairs:
-        source_key_exprs.append(f"CAST({quote_id(kp['source_col'])} AS TEXT)")
-    source_key_expr = ", ".join(source_key_exprs)
-
-    dedup_sql = f"""
-        CREATE TEMP TABLE _dedup_source AS
-        SELECT * FROM {st}
-        WHERE rowid IN (
-            SELECT MIN(rowid) FROM {st}
-            GROUP BY {source_key_expr}
-        )
-    """
-    conn.execute("DROP TABLE IF EXISTS _dedup_source")
-    conn.execute(dedup_sql)
-
-    # Build JOIN ON clause (cast to text)
-    on_parts = []
-    for kp in key_pairs:
-        bc = quote_id(kp["base_col"])
-        sc = quote_id(kp["source_col"])
-        on_parts.append(f"CAST(b.{bc} AS TEXT) = CAST(s.{sc} AS TEXT)")
-    on_clause = " AND ".join(on_parts)
-
-    # Determine columns to pull
+    # Determine columns to pull (early — needed for column pruning in dedup)
     key_source_cols = {kp["source_col"] for kp in key_pairs}
     effective_pull = [c for c in pull_columns if c in source_cols and c not in key_source_cols]
     if not effective_pull:
         effective_pull = [c for c in source_cols if c not in key_source_cols and c not in base_cols]
+
+    # Pruned column list: only key cols + effective pull cols
+    dedup_col_names = list(key_source_cols) + [c for c in effective_pull if c not in key_source_cols]
+    pruned_source_cols = ", ".join(quote_id(c) for c in dedup_col_names)
+
+    # Normalized key expressions for dedup GROUP BY
+    source_key_exprs = [_norm_key_expr(quote_id(kp["source_col"])) for kp in key_pairs]
+    source_key_expr = ", ".join(source_key_exprs)
+
+    # Null / empty key filter — drop source rows with blank keys
+    null_filters = " AND ".join(
+        f"{_norm_key_expr(quote_id(kp['source_col']))} != ''"
+        for kp in key_pairs
+    )
+
+    conn.execute("DROP TABLE IF EXISTS _dedup_source")
+    conn.execute(f"""
+        CREATE TEMP TABLE _dedup_source AS
+        SELECT {pruned_source_cols} FROM {st}
+        WHERE {null_filters}
+          AND rowid IN (
+              SELECT MIN(rowid) FROM {st}
+              WHERE {null_filters}
+              GROUP BY {source_key_expr}
+          )
+    """)
+
+    # Composite indexes for the join
+    dedup_idx_expr = ", ".join(_norm_key_expr(quote_id(kp["source_col"])) for kp in key_pairs)
+    conn.execute(f"CREATE INDEX _idx_dedup_src ON _dedup_source ({dedup_idx_expr})")
+
+    base_idx_name = f"_idx_merge_base_{source_group_id}"
+    base_idx_expr = ", ".join(_norm_key_expr(quote_id(kp["base_col"])) for kp in key_pairs)
+    conn.execute(f"CREATE INDEX IF NOT EXISTS {quote_id(base_idx_name)} ON {bt} ({base_idx_expr})")
+
+    # Normalized JOIN ON clause
+    on_parts = []
+    for kp in key_pairs:
+        bc = quote_id(kp["base_col"])
+        sc = quote_id(kp["source_col"])
+        on_parts.append(f"{_norm_key_expr(f'b.{bc}')} = {_norm_key_expr(f's.{sc}')}")
+    on_clause = " AND ".join(on_parts)
 
     # Build SELECT
     base_col_select = ", ".join(f"b.{quote_id(c)}" for c in base_cols)
@@ -453,6 +519,18 @@ def execute_merge(
     select_clause = base_col_select
     if pull_col_select:
         select_clause += ", " + pull_col_select
+
+    # EXPLAIN QUERY PLAN — capture before executing
+    try:
+        plan_rows = conn.execute(f"""
+            EXPLAIN QUERY PLAN
+            SELECT {select_clause}
+            FROM {bt} b
+            LEFT JOIN _dedup_source s ON {on_clause}
+        """).fetchall()
+        execution_plan = _parse_explain_plan(plan_rows)
+    except Exception:
+        execution_plan = {"details": [], "index_used": False, "warnings": ["Could not analyze query plan"]}
 
     # Execute LEFT JOIN
     drop_table(conn, result_table)
@@ -466,10 +544,13 @@ def execute_merge(
         conn.execute(merge_sql)
         conn.commit()
     except Exception as exc:
-        # Auto-cast retry: already casting to TEXT in ON clause
         raise ValueError(f"Merge execution failed: {exc}") from exc
-
-    conn.execute("DROP TABLE IF EXISTS _dedup_source")
+    finally:
+        conn.execute("DROP TABLE IF EXISTS _dedup_source")
+        try:
+            conn.execute(f"DROP INDEX IF EXISTS {quote_id(base_idx_name)}")
+        except Exception:
+            pass
 
     result_rows = table_row_count(conn, result_table)
     result_cols_list = read_table_columns(conn, result_table)
@@ -481,6 +562,7 @@ def execute_merge(
         "cols": len(result_cols_list),
         "columns_pulled": effective_pull,
         "key_pairs": key_pairs,
+        "execution_plan": execution_plan,
     }
 
 
@@ -505,21 +587,20 @@ def generate_validation_report(
     bt = quote_id(base_sql)
     st = quote_id(source_sql)
 
-    # Unmatched base rows
+    # Unmatched rows — use NOT EXISTS instead of NOT IN for performance
     if key_pairs:
-        base_key_exprs = []
-        source_key_exprs = []
+        join_cond_parts = []
         for kp in key_pairs:
-            base_key_exprs.append(f"CAST({quote_id(kp['base_col'])} AS TEXT)")
-            source_key_exprs.append(f"CAST({quote_id(kp['source_col'])} AS TEXT)")
-
-        base_key = " || '|||' || ".join(base_key_exprs)
-        source_key = " || '|||' || ".join(source_key_exprs)
+            bc = quote_id(kp["base_col"])
+            sc = quote_id(kp["source_col"])
+            join_cond_parts.append(f"{_norm_key_expr(f'b.{bc}')} = {_norm_key_expr(f's.{sc}')}")
+        base_join_conds = " AND ".join(join_cond_parts)
+        source_join_conds = base_join_conds
 
         try:
             unmatched_base_rows = conn.execute(f"""
-                SELECT * FROM {bt}
-                WHERE ({base_key}) NOT IN (SELECT {source_key} FROM {st})
+                SELECT b.* FROM {bt} b
+                WHERE NOT EXISTS (SELECT 1 FROM {st} s WHERE {base_join_conds})
                 LIMIT 20
             """).fetchall()
             unmatched_base_preview = [dict(r) for r in unmatched_base_rows]
@@ -528,8 +609,8 @@ def generate_validation_report(
 
         try:
             unmatched_source_rows = conn.execute(f"""
-                SELECT * FROM {st}
-                WHERE ({source_key}) NOT IN (SELECT {base_key} FROM {bt})
+                SELECT s.* FROM {st} s
+                WHERE NOT EXISTS (SELECT 1 FROM {bt} b WHERE {source_join_conds})
                 LIMIT 20
             """).fetchall()
             unmatched_source_preview = [dict(r) for r in unmatched_source_rows]
@@ -570,8 +651,9 @@ def finalize_merge(
 
     bt = quote_id(base_sql)
 
-    # Build final_merged by sequentially LEFT JOINing pulled columns from each source
+    # Build final table by sequentially LEFT JOINing pulled columns from each source
     current_table = base_sql
+    prev_temp: str | None = None
     for idx, merge in enumerate(approved_merges):
         step_table = merge.get("result_table", "")
         if not step_table or not table_exists(conn, step_table):
@@ -594,7 +676,7 @@ def finalize_merge(
         on_parts = []
         for kp in key_pairs:
             bc = quote_id(kp["base_col"])
-            on_parts.append(f"CAST(c.{bc} AS TEXT) = CAST(s.{bc} AS TEXT)")
+            on_parts.append(f"{_norm_key_expr(f'c.{bc}')} = {_norm_key_expr(f's.{bc}')}")
         on_clause = " AND ".join(on_parts)
 
         current_select = ", ".join(f"c.{quote_id(c)}" for c in current_cols)
@@ -609,13 +691,27 @@ def finalize_merge(
             LEFT JOIN {stt} s ON {on_clause}
         """)
         conn.commit()
+
+        if prev_temp:
+            drop_table(conn, prev_temp)
+        prev_temp = temp_name
         current_table = temp_name
 
-    drop_table(conn, "final_merged")
+    # Versioned table: final_merged_v{n}
+    merge_history = get_meta(conn, "merge_history") or []
+    version = len(merge_history) + 1
+    versioned_table = f"final_merged_v{version}"
+
+    drop_table(conn, versioned_table)
     if current_table != base_sql:
-        conn.execute(f"ALTER TABLE {quote_id(current_table)} RENAME TO final_merged")
+        conn.execute(f"ALTER TABLE {quote_id(current_table)} RENAME TO {quote_id(versioned_table)}")
     else:
-        conn.execute(f"CREATE TABLE final_merged AS SELECT * FROM {bt}")
+        conn.execute(f"CREATE TABLE {quote_id(versioned_table)} AS SELECT * FROM {bt}")
+    conn.commit()
+
+    # Keep final_merged as a copy of the latest version for downstream modules
+    drop_table(conn, "final_merged")
+    conn.execute(f"CREATE TABLE final_merged AS SELECT * FROM {quote_id(versioned_table)}")
     conn.commit()
 
     set_meta(conn, "mergeBaseGroupId", base_group_id)
@@ -624,9 +720,29 @@ def finalize_merge(
     final_rows = table_row_count(conn, "final_merged")
     final_cols = read_table_columns(conn, "final_merged")
     preview = read_table(conn, "final_merged", 50)
-    stats = column_stats(conn, "final_merged")
 
-    # Clean up intermediate tables
+    # Build auto-name label from group names
+    schema = get_meta(conn, "groupSchemaTableRows") or []
+    name_map = {g["group_id"]: g.get("group_name", g["group_id"]) for g in schema}
+    base_name = name_map.get(base_group_id, base_group_id)
+    source_names = [name_map.get(m.get("source_group_id", ""), m.get("source_group_id", "")) for m in approved_merges]
+    raw_label = f"merge_{base_name}_{'_'.join(source_names)}.xlsx"
+    file_label = "".join(c if c.isalnum() or c in "._- " else "_" for c in raw_label)
+
+    history_entry = {
+        "version": version,
+        "table_name": versioned_table,
+        "timestamp": datetime.now().isoformat(),
+        "base_group_id": base_group_id,
+        "source_group_ids": [m.get("source_group_id", "") for m in approved_merges],
+        "rows": final_rows,
+        "cols": len(final_cols),
+        "file_label": file_label,
+    }
+    merge_history.append(history_entry)
+    set_meta(conn, "merge_history", merge_history)
+
+    # Clean up intermediate step tables
     for merge in approved_merges:
         step_t = merge.get("result_table", "")
         if step_t and table_exists(conn, step_t):
@@ -634,12 +750,15 @@ def finalize_merge(
 
     return {
         "final_table": "final_merged",
+        "versioned_table": versioned_table,
+        "version": version,
         "rows": final_rows,
         "cols": len(final_cols),
         "columns": final_cols,
         "preview": preview,
-        "column_stats": stats,
         "approved_count": len(approved_merges),
+        "merge_history": merge_history,
+        "file_label": file_label,
     }
 
 
@@ -663,13 +782,11 @@ def skip_merge(conn: sqlite3.Connection, session_id: str, base_group_id: str) ->
     rows = table_row_count(conn, "final_merged")
     cols = read_table_columns(conn, "final_merged")
     preview = read_table(conn, "final_merged", 50)
-    stats = column_stats(conn, "final_merged")
     return {
         "final_table": "final_merged",
         "rows": rows,
         "cols": len(cols),
         "columns": cols,
         "preview": preview,
-        "column_stats": stats,
         "skipped": True,
     }

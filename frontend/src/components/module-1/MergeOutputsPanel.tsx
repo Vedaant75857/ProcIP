@@ -1,21 +1,26 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { Download, Package, X, Loader2, FileSpreadsheet } from "lucide-react";
-import type { MergeOutput } from "../../App";
+import { Download, Package, Trash2, X, Loader2, FileSpreadsheet } from "lucide-react";
+
+import type { MergeOutput } from "../../types";
 
 interface MergeOutputsPanelProps {
   mergeOutputs: MergeOutput[];
   sessionId: string;
   onClose: () => void;
+  onDeleteOutput: (version: number) => Promise<void>;
 }
 
 export default function MergeOutputsPanel({
   mergeOutputs,
   sessionId,
   onClose,
+  onDeleteOutput,
 }: MergeOutputsPanelProps) {
   const [downloadingVersion, setDownloadingVersion] = useState<number | null>(null);
   const [downloadingAll, setDownloadingAll] = useState(false);
+  const [deletingVersion, setDeletingVersion] = useState<number | null>(null);
+  const [confirmDeleteVersion, setConfirmDeleteVersion] = useState<number | null>(null);
 
   const handleDownloadCsv = async (version: number) => {
     setDownloadingVersion(version);
@@ -63,6 +68,18 @@ export default function MergeOutputsPanel({
       /* silently fail */
     } finally {
       setDownloadingAll(false);
+    }
+  };
+
+  const handleDelete = async (version: number) => {
+    setDeletingVersion(version);
+    try {
+      await onDeleteOutput(version);
+    } catch {
+      /* handled by parent */
+    } finally {
+      setDeletingVersion(null);
+      setConfirmDeleteVersion(null);
     }
   };
 
@@ -140,18 +157,49 @@ export default function MergeOutputsPanel({
                   {new Date(output.timestamp).toLocaleString()}
                 </p>
               </div>
-              <button
-                onClick={() => handleDownloadCsv(output.version)}
-                disabled={downloadingVersion === output.version}
-                className="p-2 rounded-lg text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-colors shrink-0 disabled:opacity-50"
-                title="Download as CSV"
-              >
-                {downloadingVersion === output.version ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => handleDownloadCsv(output.version)}
+                  disabled={downloadingVersion === output.version}
+                  className="p-2 rounded-lg text-neutral-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 transition-colors disabled:opacity-50"
+                  title="Download as CSV"
+                >
+                  {downloadingVersion === output.version ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Download className="w-4 h-4" />
+                  )}
+                </button>
+                {confirmDeleteVersion === output.version ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => handleDelete(output.version)}
+                      disabled={deletingVersion === output.version}
+                      className="px-2 py-1 text-[10px] font-bold bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors disabled:opacity-50"
+                    >
+                      {deletingVersion === output.version ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        "Confirm"
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setConfirmDeleteVersion(null)}
+                      className="px-2 py-1 text-[10px] font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 rounded-md hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 ) : (
-                  <Download className="w-4 h-4" />
+                  <button
+                    onClick={() => setConfirmDeleteVersion(output.version)}
+                    className="p-2 rounded-lg text-neutral-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                    title="Delete output"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 )}
-              </button>
+              </div>
             </div>
           </div>
         ))}

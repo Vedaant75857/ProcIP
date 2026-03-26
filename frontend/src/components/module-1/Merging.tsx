@@ -4,20 +4,24 @@ import { motion } from "motion/react";
 import {
   ArrowRight,
   Check,
+  CheckCircle2,
+  FileText,
   Key,
   Link2,
   Loader2,
   Maximize2,
   Minimize2,
+  RotateCcw,
   SkipForward,
   Sparkles,
+  Table2,
   X,
   AlertTriangle,
   Download,
 } from "lucide-react";
-import { SurfaceCard, PrimaryButton, itemVariants } from "../common/ui";
+import { SurfaceCard, PrimaryButton, FillBar, itemVariants } from "../common/ui";
 import type { LogEntry } from "./StatusLog";
-import type { MergeOutput } from "../../App";
+import type { MergeOutput } from "../../types";
 import MergeReport from "./MergeReport";
 
 export interface MergingProps {
@@ -37,10 +41,8 @@ export interface MergingProps {
   setMergeBaseGroupId: (v: string) => void;
   mergeBaseRecommendation: any;
   setMergeBaseRecommendation: (v: any) => void;
-  mergeSourceGroupIds: string[];
-  setMergeSourceGroupIds: (v: string[]) => void;
-  mergeCurrentSourceIdx: number;
-  setMergeCurrentSourceIdx: (v: number) => void;
+  mergeSourceGroupId: string;
+  setMergeSourceGroupId: (v: string) => void;
   mergeCommonColumns: any[];
   setMergeCommonColumns: (v: any[]) => void;
   mergeSelectedKeys: Array<{ base_col: string; source_col: string }>;
@@ -53,11 +55,12 @@ export interface MergingProps {
   setMergeValidationReport: (v: any) => void;
   mergeResult: any;
   setMergeResult: (v: any) => void;
-  mergeApprovedSources: any[];
-  setMergeApprovedSources: (v: any[]) => void;
+  mergeExecuteResult: any;
+  setMergeExecuteResult: (v: any) => void;
   mergeHistory: any[];
   setMergeHistory: (v: any[]) => void;
   onRegisterMergedGroup: (groupId: string, groupName: string, groupRow: any) => void;
+  onDeleteMergeOutput: (version: number) => Promise<void>;
   mergeOutputs: MergeOutput[];
   setMergeOutputs: React.Dispatch<React.SetStateAction<MergeOutput[]>>;
   setOutputsPanelOpen: (v: boolean) => void;
@@ -91,17 +94,16 @@ export default function Merging(props: MergingProps) {
     setLoading, setAiLoading, setLoadingMessage, setError, addLog,
     mergeBaseGroupId, setMergeBaseGroupId,
     mergeBaseRecommendation, setMergeBaseRecommendation,
-    mergeSourceGroupIds, setMergeSourceGroupIds,
-    mergeCurrentSourceIdx, setMergeCurrentSourceIdx,
+    mergeSourceGroupId, setMergeSourceGroupId,
     mergeCommonColumns, setMergeCommonColumns,
     mergeSelectedKeys, setMergeSelectedKeys,
     mergePullColumns, setMergePullColumns,
     mergeSimulation, setMergeSimulation,
     mergeValidationReport, setMergeValidationReport,
     mergeResult, setMergeResult,
-    mergeApprovedSources, setMergeApprovedSources,
+    mergeExecuteResult, setMergeExecuteResult,
     mergeHistory, setMergeHistory,
-    onRegisterMergedGroup,
+    onRegisterMergedGroup, onDeleteMergeOutput,
     setMergeOutputs, setOutputsPanelOpen,
   } = props;
 
@@ -119,9 +121,6 @@ export default function Merging(props: MergingProps) {
   const [pendingBaseCols, setPendingBaseCols] = useState<string[]>([]);
   const simDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastBasePreviewId = useRef<string>("");
-  const autoApproveRef = useRef(false);
-
-  const currentSourceGroupId = mergeSourceGroupIds[mergeCurrentSourceIdx] || "";
 
   // Build lookup for common columns
   const commonByBase = new Map<string, any>();
@@ -148,8 +147,6 @@ export default function Merging(props: MergingProps) {
       setMergeBaseRecommendation(data);
       if (data.recommended && !mergeBaseGroupId) {
         setMergeBaseGroupId(data.recommended);
-        const others = groupSchema.map((g: any) => g.group_id).filter((id: string) => id !== data.recommended);
-        setMergeSourceGroupIds(others);
       }
       addLog("Merge", "success", `Recommended base: ${groupNameMap[data.recommended] || data.recommended}`);
     } catch (err: any) {
@@ -157,7 +154,7 @@ export default function Merging(props: MergingProps) {
     } finally {
       setAiLoading(false);
     }
-  }, [sessionId, apiKey, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setAiLoading, setLoadingMessage, setMergeBaseGroupId, setMergeBaseRecommendation, setMergeSourceGroupIds]);
+  }, [sessionId, apiKey, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setAiLoading, setLoadingMessage, setMergeBaseGroupId, setMergeBaseRecommendation]);
 
   useEffect(() => {
     if (step === 6 && !mergeBaseRecommendation && groupSchema.length > 0) {
@@ -167,46 +164,37 @@ export default function Merging(props: MergingProps) {
 
   const handleBaseChange = useCallback((newBaseId: string) => {
     setMergeBaseGroupId(newBaseId);
-    const others = groupSchema.map((g: any) => g.group_id).filter((id: string) => id !== newBaseId);
-    setMergeSourceGroupIds(others);
-    setMergeCurrentSourceIdx(0);
+    setMergeSourceGroupId("");
     setMergeCommonColumns([]);
     setMergeSelectedKeys([]);
     setMergePullColumns([]);
     setMergeSimulation(null);
     setMergeValidationReport(null);
+    setMergeExecuteResult(null);
     setBasePreview(null);
     setSourcePreview(null);
     setBaseColClasses({});
     setSourceColClasses({});
     setPendingBaseCols([]);
-  }, [groupSchema, setMergeBaseGroupId, setMergeSourceGroupIds, setMergeCurrentSourceIdx, setMergeCommonColumns, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport]);
+  }, [setMergeBaseGroupId, setMergeSourceGroupId, setMergeCommonColumns, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport, setMergeExecuteResult]);
 
   const handleSourceChange = useCallback((newSourceId: string) => {
-    const idx = mergeSourceGroupIds.indexOf(newSourceId);
-    if (idx >= 0) {
-      setMergeCurrentSourceIdx(idx);
-    } else {
-      const allOthers = groupSchema.map((g: any) => g.group_id).filter((id: string) => id !== mergeBaseGroupId);
-      const newIdx = allOthers.indexOf(newSourceId);
-      setMergeSourceGroupIds(allOthers);
-      setMergeCurrentSourceIdx(newIdx >= 0 ? newIdx : 0);
-    }
-    // Keep base preview & base classes intact — only source changed
+    setMergeSourceGroupId(newSourceId);
     setMergeCommonColumns([]);
     setMergeSelectedKeys([]);
     setMergePullColumns([]);
     setMergeSimulation(null);
     setMergeValidationReport(null);
+    setMergeExecuteResult(null);
     setSourcePreview(null);
     setSourceColClasses({});
     setPendingBaseCols([]);
-  }, [groupSchema, mergeBaseGroupId, mergeSourceGroupIds, setMergeCurrentSourceIdx, setMergeSourceGroupIds, setMergeCommonColumns, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport]);
+  }, [setMergeSourceGroupId, setMergeCommonColumns, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport, setMergeExecuteResult]);
 
   // --- Section B: Fetch Common Columns + Preview ---
 
   const fetchColumnsAndPreviews = useCallback(async () => {
-    if (!sessionId || !mergeBaseGroupId || !currentSourceGroupId) return;
+    if (!sessionId || !mergeBaseGroupId || !mergeSourceGroupId) return;
     setColumnsLoading(true);
     setLoadingMessage("Analyzing columns & loading previews...");
     try {
@@ -217,7 +205,7 @@ export default function Merging(props: MergingProps) {
         body: JSON.stringify({
           sessionId,
           baseGroupId: mergeBaseGroupId,
-          sourceGroupId: currentSourceGroupId,
+          sourceGroupId: mergeSourceGroupId,
           apiKey,
           includePreview: true,
         }),
@@ -243,10 +231,10 @@ export default function Merging(props: MergingProps) {
     } finally {
       setColumnsLoading(false);
     }
-  }, [sessionId, mergeBaseGroupId, currentSourceGroupId, apiKey, addLog, setError, setLoadingMessage, setMergeCommonColumns]);
+  }, [sessionId, mergeBaseGroupId, mergeSourceGroupId, apiKey, addLog, setError, setLoadingMessage, setMergeCommonColumns]);
 
   useEffect(() => {
-    if (mergeBaseGroupId && currentSourceGroupId && step === 6) {
+    if (mergeBaseGroupId && mergeSourceGroupId && step === 6) {
       setMergeSelectedKeys([]);
       setMergePullColumns([]);
       setMergeSimulation(null);
@@ -254,7 +242,7 @@ export default function Merging(props: MergingProps) {
       setPendingBaseCols([]);
       fetchColumnsAndPreviews();
     }
-  }, [mergeBaseGroupId, currentSourceGroupId, step]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mergeBaseGroupId, mergeSourceGroupId, step]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Key Selection ---
   // Base checkbox: toggles column in pendingBaseCols queue, or removes existing pair
@@ -308,7 +296,7 @@ export default function Merging(props: MergingProps) {
 
   useEffect(() => {
     if (simDebounceRef.current) clearTimeout(simDebounceRef.current);
-    if (mergeSelectedKeys.length === 0 || !mergeBaseGroupId || !currentSourceGroupId) {
+    if (mergeSelectedKeys.length === 0 || !mergeBaseGroupId || !mergeSourceGroupId) {
       setMergeSimulation(null);
       setSimError(null);
       return;
@@ -323,7 +311,7 @@ export default function Merging(props: MergingProps) {
           body: JSON.stringify({
             sessionId,
             baseGroupId: mergeBaseGroupId,
-            sourceGroupId: currentSourceGroupId,
+            sourceGroupId: mergeSourceGroupId,
             keyPairs: mergeSelectedKeys,
             pullColumns: mergePullColumns,
           }),
@@ -344,17 +332,17 @@ export default function Merging(props: MergingProps) {
       }
     }, 500);
     return () => { if (simDebounceRef.current) clearTimeout(simDebounceRef.current); };
-  }, [mergeSelectedKeys, mergePullColumns, sessionId, mergeBaseGroupId, currentSourceGroupId, setMergeSimulation]);
+  }, [mergeSelectedKeys, mergePullColumns, sessionId, mergeBaseGroupId, mergeSourceGroupId, setMergeSimulation]);
 
   // --- Section D: Execute ---
 
   const handleExecute = useCallback(async () => {
-    if (!sessionId || !mergeBaseGroupId || !currentSourceGroupId || mergeSelectedKeys.length === 0) return;
+    if (!sessionId || !mergeBaseGroupId || !mergeSourceGroupId || mergeSelectedKeys.length === 0) return;
     setExecutingMerge(true);
     setMergeProgress(5);
     setMergeProgressMessage("Preparing merge...");
     setError(null);
-    addLog("Merge", "info", `Executing merge for source: ${groupNameMap[currentSourceGroupId] || currentSourceGroupId}...`);
+    addLog("Merge", "info", `Executing merge for source: ${groupNameMap[mergeSourceGroupId] || mergeSourceGroupId}...`);
     try {
       const res = await fetch("/api/merge/execute", {
         method: "POST",
@@ -362,7 +350,7 @@ export default function Merging(props: MergingProps) {
         body: JSON.stringify({
           sessionId,
           baseGroupId: mergeBaseGroupId,
-          sourceGroupId: currentSourceGroupId,
+          sourceGroupId: mergeSourceGroupId,
           keyPairs: mergeSelectedKeys,
           pullColumns: mergePullColumns,
         }),
@@ -396,7 +384,44 @@ export default function Merging(props: MergingProps) {
             if (data.stage === "done" && data.result) {
               const vr = { ...data.result.validation_report, _execution_plan: data.result.merge_log?.execution_plan };
               setMergeValidationReport(vr);
-              autoApproveRef.current = true;
+
+              const persist = data.result.persist;
+              if (persist) {
+                const execResult = {
+                  rows: persist.rows,
+                  cols: persist.cols,
+                  columns: persist.columns,
+                  column_stats: persist.column_stats,
+                  preview: persist.preview,
+                  version: persist.version,
+                  file_label: persist.file_label,
+                  key_pairs: persist.key_pairs,
+                  pull_columns: persist.pull_columns,
+                  base_group_id: persist.base_group_id,
+                  source_group_id: persist.source_group_id,
+                };
+                setMergeExecuteResult(execResult);
+
+                if (persist.merge_history) setMergeHistory(persist.merge_history);
+
+                setMergeOutputs((prev) => [
+                  ...prev,
+                  {
+                    version: persist.version,
+                    label: persist.file_label || `Merge v${persist.version}`,
+                    rows: persist.rows ?? 0,
+                    cols: persist.cols ?? 0,
+                    sourcesCount: 1,
+                    timestamp: new Date().toISOString(),
+                  },
+                ]);
+                setOutputsPanelOpen(true);
+
+                if (persist.group_id && persist.group_name && persist.group_row) {
+                  onRegisterMergedGroup(persist.group_id, persist.group_name, persist.group_row);
+                }
+              }
+
               addLog("Merge", "success", `Merged: ${data.result.merge_log?.rows || 0} rows, ${data.result.merge_log?.columns_pulled?.length || 0} columns pulled`);
             } else if (data.stage === "error") {
               throw new Error(data.message);
@@ -415,87 +440,7 @@ export default function Merging(props: MergingProps) {
       setMergeProgress(0);
       setMergeProgressMessage("");
     }
-  }, [sessionId, mergeBaseGroupId, currentSourceGroupId, mergeSelectedKeys, mergePullColumns, groupNameMap, addLog, setError, setMergeValidationReport]);
-
-  // --- Approve & Continue / Finalize ---
-
-  const handleApprove = useCallback(async () => {
-    try {
-      const newApproved = [
-        ...mergeApprovedSources,
-        {
-          base_group_id: mergeBaseGroupId,
-          source_group_id: currentSourceGroupId,
-          result_table: `_merge_step_${currentSourceGroupId}`,
-          key_pairs: mergeSelectedKeys,
-          pull_columns: mergePullColumns,
-          validation_report: mergeValidationReport,
-        },
-      ];
-      setMergeApprovedSources(newApproved);
-
-      const nextIdx = mergeCurrentSourceIdx + 1;
-      if (nextIdx < mergeSourceGroupIds.length) {
-        setMergeCurrentSourceIdx(nextIdx);
-        setMergeCommonColumns([]);
-        setMergeSelectedKeys([]);
-        setMergePullColumns([]);
-        setMergeSimulation(null);
-        setMergeValidationReport(null);
-        setSourcePreview(null);
-        setSourceColClasses({});
-        setPendingBaseCols([]);
-        addLog("Merge", "info", `Approved source ${mergeCurrentSourceIdx + 1}/${mergeSourceGroupIds.length}. Moving to next source.`);
-      } else {
-        setAiLoading(true);
-        setLoadingMessage("Finalizing merge — building final_merged table...");
-        try {
-          const payload = newApproved.map(({ validation_report: _vr, ...rest }) => rest);
-          const res = await fetch("/api/merge/finalize", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId, approvedMerges: payload }),
-          });
-          if (!res.ok) throw new Error((await res.json()).error || "Finalization failed");
-          const data = await res.json();
-          setMergeResult(data);
-          if (data.merge_history) setMergeHistory(data.merge_history);
-
-          const baseName = groupNameMap[mergeBaseGroupId] || mergeBaseGroupId;
-          const srcNames = newApproved.map((s: any) => groupNameMap[s.source_group_id] || s.source_group_id);
-          const outputLabel = `Merged ${baseName}-${srcNames.join(",")}`;
-          setMergeOutputs((prev) => [
-            ...prev,
-            {
-              version: data.version ?? (prev.length + 1),
-              label: data.file_label || outputLabel,
-              rows: data.rows ?? 0,
-              cols: data.cols ?? 0,
-              sourcesCount: newApproved.length,
-              timestamp: new Date().toISOString(),
-            },
-          ]);
-          setOutputsPanelOpen(true);
-
-          addLog("Merge", "success", `Final merged table: ${data.rows} rows × ${data.cols} columns`);
-          setStep(7);
-        } finally {
-          setAiLoading(false);
-        }
-      }
-    } catch (err: any) {
-      setError(err.message || "Approve & finalize failed");
-      addLog("Merge", "error", err.message || "Approve & finalize failed");
-      setAiLoading(false);
-    }
-  }, [mergeApprovedSources, mergeBaseGroupId, currentSourceGroupId, mergeSelectedKeys, mergePullColumns, mergeValidationReport, mergeCurrentSourceIdx, mergeSourceGroupIds, sessionId, groupNameMap, addLog, setError, setAiLoading, setLoadingMessage, setMergeApprovedSources, setMergeCurrentSourceIdx, setMergeCommonColumns, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport, setMergeResult, setMergeHistory, setStep, setMergeOutputs, setOutputsPanelOpen]);
-
-  useEffect(() => {
-    if (autoApproveRef.current && mergeValidationReport && !executingMerge) {
-      autoApproveRef.current = false;
-      handleApprove();
-    }
-  }, [mergeValidationReport, executingMerge, handleApprove]);
+  }, [sessionId, mergeBaseGroupId, mergeSourceGroupId, mergeSelectedKeys, mergePullColumns, groupNameMap, addLog, setError, setMergeValidationReport, setMergeExecuteResult, setMergeHistory, setMergeOutputs, setOutputsPanelOpen, onRegisterMergedGroup]);
 
   // --- Skip Merge ---
 
@@ -530,6 +475,10 @@ export default function Merging(props: MergingProps) {
       ]);
       setOutputsPanelOpen(true);
 
+      if (data.group_id && data.group_name && data.group_row) {
+        onRegisterMergedGroup(data.group_id, data.group_name, data.group_row);
+      }
+
       addLog("Merge", "success", `Final file: ${data.rows} rows × ${data.cols} columns (no merge)`);
       setStep(7);
     } catch (err: any) {
@@ -538,83 +487,46 @@ export default function Merging(props: MergingProps) {
     } finally {
       setAiLoading(false);
     }
-  }, [sessionId, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setError, setAiLoading, setLoadingMessage, setMergeResult, setMergeHistory, setStep, setMergeOutputs, setOutputsPanelOpen]);
+  }, [sessionId, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setError, setAiLoading, setLoadingMessage, setMergeResult, setMergeHistory, setStep, setMergeOutputs, setOutputsPanelOpen, onRegisterMergedGroup]);
 
   // --- Post-merge actions ---
 
   const handleRedoMerge = useCallback(async () => {
+    if (!mergeExecuteResult?.version) return;
+    setLoading(true);
     try {
-      await fetch("/api/merge/redo-clear-cache", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId }),
-      });
+      await onDeleteMergeOutput(mergeExecuteResult.version);
     } catch {
-      // best-effort cache clear
+      // best-effort
     }
-    setMergeResult(null);
-    setMergeApprovedSources([]);
+    setMergeExecuteResult(null);
     setMergeValidationReport(null);
     setMergeSelectedKeys([]);
     setMergePullColumns([]);
     setMergeSimulation(null);
-    setMergeCurrentSourceIdx(0);
+    setPendingBaseCols([]);
+    addLog("Merge", "info", "Redo merge — deleted output, returning to key selection.");
+    setLoading(false);
+  }, [mergeExecuteResult, onDeleteMergeOutput, addLog, setLoading, setMergeExecuteResult, setMergeValidationReport, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation]);
+
+  const handlePerformAnotherMerge = useCallback(() => {
+    setMergeExecuteResult(null);
+    setMergeValidationReport(null);
+    setMergeSimulation(null);
+    setMergeSelectedKeys([]);
+    setMergePullColumns([]);
+    setPendingBaseCols([]);
+    setMergeBaseGroupId("");
+    setMergeSourceGroupId("");
+    setMergeBaseRecommendation(null);
+    setMergeCommonColumns([]);
     setBasePreview(null);
     setSourcePreview(null);
     setBaseColClasses({});
     setSourceColClasses({});
-    setPendingBaseCols([]);
-    setMergeOutputs((prev) => prev.slice(0, -1));
-    setMergeHistory(mergeHistory.slice(0, -1));
-    addLog("Merge", "info", "Redo merge — cleared cache, returning to key selection.");
-    setStep(6);
-  }, [sessionId, mergeHistory, addLog, setMergeResult, setMergeApprovedSources, setMergeValidationReport, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeCurrentSourceIdx, setStep, setMergeOutputs, setMergeHistory]);
-
-  const [mergeAgainLoading, setMergeAgainLoading] = useState(false);
-
-  const handleMergeAgain = useCallback(async () => {
-    if (!sessionId) return;
-    setMergeAgainLoading(true);
-    try {
-      const baseName = groupNameMap[mergeBaseGroupId] || mergeBaseGroupId;
-      const sourceNames = mergeApprovedSources.map((s) => groupNameMap[s.source_group_id] || s.source_group_id);
-      const newGroupName = `Merged ${baseName}-${sourceNames.join(",")}`;
-
-      const res = await fetch("/api/merge/register-merged-group", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, groupName: newGroupName }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error || "Failed to register merged group");
-      const data = await res.json();
-
-      onRegisterMergedGroup(data.group_id, data.group_name, data.group_row);
-
-      setMergeResult(null);
-      setMergeApprovedSources([]);
-      setMergeValidationReport(null);
-      setMergeSelectedKeys([]);
-      setMergePullColumns([]);
-      setMergeSimulation(null);
-      setMergeCurrentSourceIdx(0);
-      setMergeBaseGroupId("");
-      setMergeSourceGroupIds([]);
-      setMergeBaseRecommendation(null);
-      setBasePreview(null);
-      setSourcePreview(null);
-      setBaseColClasses({});
-      setSourceColClasses({});
-      setPendingBaseCols([]);
-
-      addLog("Merge", "info", `Registered "${newGroupName}" as a new group — starting fresh merge workflow.`);
-      setStep(6);
-    } catch (err: any) {
-      setError(err.message);
-      addLog("Merge", "error", err.message);
-    } finally {
-      setMergeAgainLoading(false);
-    }
-  }, [sessionId, mergeBaseGroupId, mergeApprovedSources, groupNameMap, onRegisterMergedGroup, addLog, setError, setStep, setMergeResult, setMergeApprovedSources, setMergeValidationReport, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeCurrentSourceIdx, setMergeBaseGroupId, setMergeSourceGroupIds, setMergeBaseRecommendation]);
+    addLog("Merge", "info", "Starting another merge — previous outputs preserved.");
+    setTimeout(() => fetchRecommendation(), 0);
+  }, [addLog, setMergeExecuteResult, setMergeValidationReport, setMergeSimulation, setMergeSelectedKeys, setMergePullColumns, setMergeBaseGroupId, setMergeSourceGroupId, setMergeBaseRecommendation, setMergeCommonColumns, fetchRecommendation]);
 
   // ===================== COLUMN COLOR HELPERS =====================
 
@@ -640,13 +552,8 @@ export default function Merging(props: MergingProps) {
   if (step === 7) {
     return (
       <MergeReport
-        mergeResult={mergeResult}
-        mergeApprovedSources={mergeApprovedSources}
         mergeHistory={mergeHistory}
-        groupNameMap={groupNameMap}
-        onRedoMerge={handleRedoMerge}
-        onMergeAgain={handleMergeAgain}
-        mergeAgainLoading={mergeAgainLoading}
+        mergeOutputs={props.mergeOutputs}
       />
     );
   }
@@ -681,7 +588,7 @@ export default function Merging(props: MergingProps) {
     const preview = side === "base" ? basePreview : sourcePreview;
     const columns = preview?.columns || (side === "base" ? allBaseColumns : allSourceColumns);
     const rows = preview?.rows || [];
-    const groupId = side === "base" ? mergeBaseGroupId : currentSourceGroupId;
+    const groupId = side === "base" ? mergeBaseGroupId : mergeSourceGroupId;
     const label = side === "base" ? "Base" : "Source";
 
     return (
@@ -832,12 +739,16 @@ export default function Merging(props: MergingProps) {
     );
   }
 
+  const showSetup = !mergeExecuteResult;
+
   return (
     <motion.div variants={itemVariants} className="space-y-6">
       {fullscreenOverlay}
 
+      {showSetup && (
+      <>
       {/* Section A: Base & Source Selection */}
-      <SurfaceCard title="Base & Source Selection" icon={Sparkles} subtitle={hasMultipleGroups ? `Merging source ${mergeCurrentSourceIdx + 1} of ${mergeSourceGroupIds.length}` : undefined}>
+      <SurfaceCard title="Base & Source Selection" icon={Sparkles}>
         {!hasMultipleGroups && groupSchema.length === 1 && (
           <div className="text-sm text-neutral-500 dark:text-neutral-400 mb-4">
             Only one table available.{" "}
@@ -876,10 +787,10 @@ export default function Merging(props: MergingProps) {
               {/* Source dropdown */}
               <div>
                 <label className="block text-xs font-semibold text-neutral-500 dark:text-neutral-400 mb-1.5">
-                  Source Table ({mergeCurrentSourceIdx + 1}/{mergeSourceGroupIds.length})
+                  Source Table
                 </label>
                 <select
-                  value={currentSourceGroupId}
+                  value={mergeSourceGroupId}
                   onChange={(e) => handleSourceChange(e.target.value)}
                   className="w-full rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2.5 text-sm text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-red-500 focus:border-transparent"
                 >
@@ -900,7 +811,7 @@ export default function Merging(props: MergingProps) {
       </SurfaceCard>
 
       {/* Section B: Side-by-Side Preview */}
-      {mergeBaseGroupId && currentSourceGroupId && (
+      {mergeBaseGroupId && mergeSourceGroupId && (
         <SurfaceCard
           title="Column Matching & Preview"
           icon={Link2}
@@ -1041,7 +952,7 @@ export default function Merging(props: MergingProps) {
       )}
 
       {/* Section D: Execute & Validate */}
-      {mergeBaseGroupId && currentSourceGroupId && !mergeValidationReport && (
+      {mergeBaseGroupId && mergeSourceGroupId && !mergeValidationReport && (
         <>
           {executingMerge && (
             <SurfaceCard>
@@ -1106,6 +1017,156 @@ export default function Merging(props: MergingProps) {
               )}
             </div>
           )}
+        </>
+      )}
+      </>
+      )}
+
+      {/* Post-Execute Summary Panel */}
+      {mergeExecuteResult && (
+        <>
+          <SurfaceCard noPadding>
+            <div className="rounded-3xl bg-gradient-to-r from-emerald-600 to-teal-600 p-7 text-white">
+              <div className="flex items-start justify-between gap-6">
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <CheckCircle2 className="w-6 h-6" />
+                    <h2 className="text-xl font-semibold tracking-tight">Merge Complete</h2>
+                  </div>
+                  <p className="text-emerald-50/90 text-sm max-w-xl">
+                    Successfully merged {groupNameMap[mergeExecuteResult.base_group_id] || mergeExecuteResult.base_group_id} with {groupNameMap[mergeExecuteResult.source_group_id] || mergeExecuteResult.source_group_id}.
+                  </p>
+                  {mergeExecuteResult.version && (
+                    <p className="text-emerald-100/70 text-xs mt-1">Version {mergeExecuteResult.version} &middot; {mergeExecuteResult.file_label}</p>
+                  )}
+                </div>
+                <div className="flex gap-3 text-center shrink-0">
+                  <div className="rounded-xl bg-white/15 px-4 py-3 backdrop-blur">
+                    <p className="text-[10px] uppercase tracking-wider text-emerald-200">Rows</p>
+                    <p className="text-lg font-bold tabular-nums mt-0.5">{(mergeExecuteResult.rows ?? 0).toLocaleString()}</p>
+                  </div>
+                  <div className="rounded-xl bg-white/15 px-4 py-3 backdrop-blur">
+                    <p className="text-[10px] uppercase tracking-wider text-emerald-200">Columns</p>
+                    <p className="text-lg font-bold tabular-nums mt-0.5">{mergeExecuteResult.cols ?? 0}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </SurfaceCard>
+
+          {/* Per-Source Details */}
+          <SurfaceCard title="Merge Details" icon={Table2}>
+            <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 p-4">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+                  Source: {groupNameMap[mergeExecuteResult.source_group_id] || mergeExecuteResult.source_group_id}
+                </h4>
+              </div>
+              <div className="flex flex-wrap gap-4 text-xs text-neutral-500 dark:text-neutral-400">
+                <span>Keys: {(mergeExecuteResult.key_pairs || []).map((kp: any) => `${kp.base_col} \u2194 ${kp.source_col}`).join(", ")}</span>
+                <span>Pulled: {(mergeExecuteResult.pull_columns || []).length} columns</span>
+                {mergeValidationReport && (
+                  <>
+                    <span>Rows: {mergeValidationReport.result_rows}</span>
+                    <span>Explosion: {mergeValidationReport.explosion_factor}\u00d7</span>
+                  </>
+                )}
+              </div>
+            </div>
+          </SurfaceCard>
+
+          {/* Column Quality */}
+          {mergeExecuteResult.column_stats && mergeExecuteResult.column_stats.length > 0 && (
+            <SurfaceCard title="Column Quality" icon={FileText}>
+              <div className="overflow-auto max-h-[400px] rounded-xl border border-neutral-200 dark:border-neutral-700">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-neutral-50 dark:bg-neutral-800">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-bold text-neutral-500">Column</th>
+                      <th className="px-3 py-2 text-left font-bold text-neutral-500">Fill Rate</th>
+                      <th className="px-3 py-2 text-right font-bold text-neutral-500">Nulls</th>
+                      <th className="px-3 py-2 text-right font-bold text-neutral-500">Distinct</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mergeExecuteResult.column_stats.map((cs: any) => (
+                      <tr key={cs.column_name} className="border-t border-neutral-100 dark:border-neutral-800">
+                        <td className="px-3 py-1.5 font-medium text-neutral-700 dark:text-neutral-300">{cs.column_name}</td>
+                        <td className="px-3 py-1.5"><FillBar rate={cs.fill_rate} /></td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-neutral-500">{cs.null_count}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-neutral-500">{cs.distinct_count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </SurfaceCard>
+          )}
+
+          {/* Data Preview */}
+          {mergeExecuteResult.preview && mergeExecuteResult.preview.length > 0 && (
+            <SurfaceCard title="Data Preview" subtitle={`First ${mergeExecuteResult.preview.length} rows`}>
+              <div className="overflow-auto max-h-[350px] rounded-xl border border-neutral-200 dark:border-neutral-700">
+                <table className="w-full text-[11px]">
+                  <thead className="sticky top-0 bg-neutral-50 dark:bg-neutral-800">
+                    <tr>
+                      {Object.keys(mergeExecuteResult.preview[0]).map((col: string) => (
+                        <th key={col} className="px-2 py-1.5 font-bold text-neutral-500 whitespace-nowrap border-b">{col}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mergeExecuteResult.preview.slice(0, 50).map((row: any, ri: number) => (
+                      <tr key={ri} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+                        {Object.values(row).map((val: any, ci: number) => (
+                          <td key={ci} className="px-2 py-1 border-b border-neutral-100 dark:border-neutral-800 whitespace-nowrap max-w-[180px] truncate">{String(val ?? "")}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </SurfaceCard>
+          )}
+
+          {/* Action Buttons */}
+          <SurfaceCard title="What's Next?" subtitle="Choose how to proceed">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <button
+                onClick={handleRedoMerge}
+                disabled={loading}
+                className="flex flex-col items-center gap-2 rounded-2xl border-2 border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-5 hover:border-red-300 dark:hover:border-red-700 hover:bg-red-50/30 dark:hover:bg-red-950/20 transition-all group disabled:opacity-60"
+              >
+                <span className="w-10 h-10 rounded-xl bg-neutral-100 dark:bg-neutral-700 flex items-center justify-center group-hover:bg-red-100 dark:group-hover:bg-red-900/30 transition-colors">
+                  <RotateCcw className="w-5 h-5 text-neutral-500 group-hover:text-red-600 dark:group-hover:text-red-400 transition-colors" />
+                </span>
+                <span className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">Redo Merge</span>
+                <span className="text-[11px] text-neutral-400 text-center leading-tight">Delete this output, pick different keys for the same pair</span>
+              </button>
+
+              <button
+                onClick={handlePerformAnotherMerge}
+                className="flex flex-col items-center gap-2 rounded-2xl border-2 border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-5 hover:border-amber-300 dark:hover:border-amber-700 hover:bg-amber-50/30 dark:hover:bg-amber-950/20 transition-all group"
+              >
+                <span className="w-10 h-10 rounded-xl bg-neutral-100 dark:bg-neutral-700 flex items-center justify-center group-hover:bg-amber-100 dark:group-hover:bg-amber-900/30 transition-colors">
+                  <Sparkles className="w-5 h-5 text-neutral-500 group-hover:text-amber-600 dark:group-hover:text-amber-400 transition-colors" />
+                </span>
+                <span className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">Perform Another Merge</span>
+                <span className="text-[11px] text-neutral-400 text-center leading-tight">Start a new merge — previous output stays saved</span>
+              </button>
+
+              <button
+                onClick={() => setStep(7)}
+                className="flex flex-col items-center gap-2 rounded-2xl border-2 border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-5 hover:border-emerald-300 dark:hover:border-emerald-700 hover:bg-emerald-50/30 dark:hover:bg-emerald-950/20 transition-all group"
+              >
+                <span className="w-10 h-10 rounded-xl bg-neutral-100 dark:bg-neutral-700 flex items-center justify-center group-hover:bg-emerald-100 dark:group-hover:bg-emerald-900/30 transition-colors">
+                  <ArrowRight className="w-5 h-5 text-neutral-500 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors" />
+                </span>
+                <span className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">Move to Next Step</span>
+                <span className="text-[11px] text-neutral-400 text-center leading-tight">Continue to the next step in the pipeline</span>
+              </button>
+            </div>
+          </SurfaceCard>
         </>
       )}
 

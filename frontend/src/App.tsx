@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { Database, AlertCircle, CheckCircle2, KeyRound, RefreshCw, Package, Sun, Moon, Table2 } from "lucide-react";
-
+import type { MergeOutput } from "./types";
 import { AnimatePresence, motion } from "motion/react";
 import DataLoading from "./components/module-1/DataLoading";
 import DataCleaning from "./components/module-1/DataCleaning";
@@ -9,8 +9,8 @@ import Appending from "./components/module-1/Appending";
 import Merging from "./components/module-1/Merging";
 import LoadingOverlay from "./components/module-1/LoadingOverlay";
 import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
-import MergeOutputsPanel from "./components/module-1/MergeOutputsPanel";
 import DataPreviewOverlay from "./components/module-1/DataPreviewOverlay";
+import MergeOutputsPanel from "./components/module-1/MergeOutputsPanel";
 import { StepHero, pageVariants, horizontalVariants } from "./components/common/ui";
 import { useTheme } from "./components/common/ThemeProvider";
 
@@ -30,14 +30,7 @@ function jsonSafeStringify(value: unknown): string {
   });
 }
 
-export interface MergeOutput {
-  version: number;
-  label: string;
-  rows: number;
-  cols: number;
-  sourcesCount: number;
-  timestamp: string;
-}
+export type { MergeOutput } from "./types";
 
 export default function App() {
   const { theme, toggleTheme } = useTheme();
@@ -121,15 +114,14 @@ export default function App() {
   // Step 6-7: Guided Merge
   const [mergeBaseGroupId, setMergeBaseGroupId] = useState<string>("");
   const [mergeBaseRecommendation, setMergeBaseRecommendation] = useState<any>(null);
-  const [mergeSourceGroupIds, setMergeSourceGroupIds] = useState<string[]>([]);
-  const [mergeCurrentSourceIdx, setMergeCurrentSourceIdx] = useState(0);
+  const [mergeSourceGroupId, setMergeSourceGroupId] = useState<string>("");
   const [mergeCommonColumns, setMergeCommonColumns] = useState<any[]>([]);
   const [mergeSelectedKeys, setMergeSelectedKeys] = useState<Array<{base_col: string; source_col: string}>>([]);
   const [mergePullColumns, setMergePullColumns] = useState<string[]>([]);
   const [mergeSimulation, setMergeSimulation] = useState<any>(null);
   const [mergeValidationReport, setMergeValidationReport] = useState<any>(null);
   const [mergeResult, setMergeResult] = useState<any>(null);
-  const [mergeApprovedSources, setMergeApprovedSources] = useState<any[]>([]);
+  const [mergeExecuteResult, setMergeExecuteResult] = useState<any>(null);
   const [mergeHistory, setMergeHistory] = useState<any[]>([]);
 
   // Group Insights
@@ -274,7 +266,7 @@ export default function App() {
         headerNormDecisions, headerNormStandardFields,
         appendGroups, unassigned, excludedTables,
         appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
-        mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources, mergeHistory,
+        mergeBaseGroupId, mergeSourceGroupId, mergeHistory,
         mergeResult: mergeResult ? { ...mergeResult, csv: undefined } : null,
         mergeOutputs,
       };
@@ -287,9 +279,14 @@ export default function App() {
     headerNormDecisions, headerNormStandardFields,
     appendGroups, unassigned, excludedTables,
     appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
-    mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources, mergeResult, mergeHistory,
+    mergeBaseGroupId, mergeSourceGroupId, mergeResult, mergeHistory,
     mergeOutputs,
   ]);
+
+  // Auto-close merge outputs panel when navigating away from merge steps
+  useEffect(() => {
+    if (step < 6) setOutputsPanelOpen(false);
+  }, [step]);
 
   // Warn before page unload when session is active
   useEffect(() => {
@@ -319,7 +316,6 @@ export default function App() {
     if (patch.groupSchema) setGroupSchema(patch.groupSchema);
     if (!patch.groupSchema && patch.groupSchemaTableRows) setGroupSchema(patch.groupSchemaTableRows);
     if (patch.mergeBaseGroupId) setMergeBaseGroupId(patch.mergeBaseGroupId);
-    if (patch.mergeApprovedSources) setMergeApprovedSources(patch.mergeApprovedSources);
     if (patch.mergeResult) {
       setMergeResult(patch.mergeResult);
       if (patch.mergeResult.merge_history) {
@@ -696,9 +692,9 @@ export default function App() {
       setGroupPreviewData({});
       setCleaningConfigs({});
       setMergeBaseGroupId("");
-      setMergeSourceGroupIds([]);
-      setMergeApprovedSources([]);
+      setMergeSourceGroupId("");
       setMergeResult(null);
+      setMergeExecuteResult(null);
       setGroupInsights({});
       setGroupReports([]);
       setCrossGroupOverview(null);
@@ -878,6 +874,29 @@ export default function App() {
     setGroupSchema((prev) => [...prev, groupRow]);
     setAppendGroups((prev) => [...prev, { group_id: groupId, group_name: groupName }]);
   }, []);
+
+  const handleDeleteMergeOutput = useCallback(async (version: number) => {
+    if (!sessionId) return;
+    try {
+      const res = await fetch("/api/merge/delete-output", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, version }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to delete output");
+      const data = await res.json();
+      setMergeOutputs((prev) => prev.filter((o) => o.version !== version));
+      setMergeHistory((prev) => prev.filter((h: any) => h.version !== version));
+      if (data.removed_group_id) {
+        setGroupSchema((prev) => prev.filter((g: any) => g.group_id !== data.removed_group_id));
+        setAppendGroups((prev) => prev.filter((g: any) => g.group_id !== data.removed_group_id));
+      }
+      addLog("Merge", "success", `Deleted merge output v${version}`);
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Merge", "error", err.message);
+    }
+  }, [sessionId, addLog]);
 
   const AI_STEPS = new Set([3, 4, 6]);
 
@@ -1149,10 +1168,8 @@ export default function App() {
                         setMergeBaseGroupId={setMergeBaseGroupId}
                         mergeBaseRecommendation={mergeBaseRecommendation}
                         setMergeBaseRecommendation={setMergeBaseRecommendation}
-                        mergeSourceGroupIds={mergeSourceGroupIds}
-                        setMergeSourceGroupIds={setMergeSourceGroupIds}
-                        mergeCurrentSourceIdx={mergeCurrentSourceIdx}
-                        setMergeCurrentSourceIdx={setMergeCurrentSourceIdx}
+                        mergeSourceGroupId={mergeSourceGroupId}
+                        setMergeSourceGroupId={setMergeSourceGroupId}
                         mergeCommonColumns={mergeCommonColumns}
                         setMergeCommonColumns={setMergeCommonColumns}
                         mergeSelectedKeys={mergeSelectedKeys}
@@ -1165,11 +1182,12 @@ export default function App() {
                         setMergeValidationReport={setMergeValidationReport}
                         mergeResult={mergeResult}
                         setMergeResult={setMergeResult}
-                        mergeApprovedSources={mergeApprovedSources}
-                        setMergeApprovedSources={setMergeApprovedSources}
+                        mergeExecuteResult={mergeExecuteResult}
+                        setMergeExecuteResult={setMergeExecuteResult}
                         mergeHistory={mergeHistory}
                         setMergeHistory={setMergeHistory}
                         onRegisterMergedGroup={handleRegisterMergedGroup}
+                        onDeleteMergeOutput={handleDeleteMergeOutput}
                         mergeOutputs={mergeOutputs}
                         setMergeOutputs={setMergeOutputs}
                         setOutputsPanelOpen={setOutputsPanelOpen}
@@ -1187,7 +1205,7 @@ export default function App() {
         </div>
         <StatusLog entries={statusLog} onClear={() => setStatusLog([])} />
 
-        {mergeOutputs.length > 0 && !outputsPanelOpen && (
+        {mergeOutputs.length > 0 && !outputsPanelOpen && step >= 6 && (
           <motion.button
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
@@ -1205,11 +1223,12 @@ export default function App() {
         )}
       </main>
 
-      {outputsPanelOpen && mergeOutputs.length > 0 && sessionId && (
+      {outputsPanelOpen && mergeOutputs.length > 0 && sessionId && step >= 6 && (
         <MergeOutputsPanel
           mergeOutputs={mergeOutputs}
           sessionId={sessionId}
           onClose={() => setOutputsPanelOpen(false)}
+          onDeleteOutput={handleDeleteMergeOutput}
         />
       )}
 

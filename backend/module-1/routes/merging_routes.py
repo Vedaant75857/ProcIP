@@ -30,10 +30,12 @@ from shared.db import (
 from merging.guided_merge_service import (
     classify_all_columns,
     classify_columns,
+    delete_merge_output,
     execute_merge,
     finalize_merge,
     find_common_columns,
     generate_validation_report,
+    persist_merge_output,
     recommend_base_file,
     simulate_join,
     skip_merge,
@@ -172,9 +174,20 @@ def execute():
                     conn, base_sql, source_sql, merge_log["result_table"], merge_log
                 )
 
+                yield _sse({"stage": "persist", "progress": 80, "message": "Saving versioned output..."})
+
+                persist_result = persist_merge_output(
+                    conn, session_id, merge_log["result_table"],
+                    base_group_id, source_group_id, key_pairs, pull_columns,
+                )
+
                 yield _sse({
                     "stage": "done", "progress": 100, "message": "Merge complete!",
-                    "result": {"merge_log": merge_log, "validation_report": report},
+                    "result": {
+                        "merge_log": merge_log,
+                        "validation_report": report,
+                        "persist": persist_result,
+                    },
                 })
             except Exception as exc:
                 yield _sse({"stage": "error", "progress": 0, "message": str(exc)})
@@ -256,6 +269,25 @@ def redo_clear_cache():
         set_meta(conn, "mergeApprovedSources", [])
 
         return jsonify({"cleared": True})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/delete-output", methods=["POST"])
+def delete_output():
+    """Delete a specific versioned merge output, its history entry, and group registration."""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        version = body.get("version")
+        if not session_id or version is None:
+            return jsonify({"error": "Missing sessionId or version"}), 400
+
+        conn = get_session_db(session_id)
+        result = delete_merge_output(conn, session_id, int(version))
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

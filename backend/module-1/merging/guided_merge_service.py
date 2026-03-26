@@ -15,6 +15,8 @@ from shared.db import (
     quote_id,
     read_table,
     read_table_columns,
+    register_table,
+    unregister_table,
     set_meta,
     table_exists,
     table_row_count,
@@ -820,6 +822,19 @@ def skip_merge(conn: sqlite3.Connection, session_id: str, base_group_id: str) ->
     merge_history.append(history_entry)
     set_meta(conn, "merge_history", merge_history)
 
+    group_id = f"merged_v{version}_{int(datetime.now().timestamp())}"
+    group_name = f"Merge Output v{version}"
+    register_table(conn, group_id, versioned_table)
+
+    group_row = {
+        "group_id": group_id,
+        "group_name": group_name,
+        "rows": rows,
+        "columns": cols,
+    }
+    schema.append(group_row)
+    set_meta(conn, "groupSchemaTableRows", schema)
+
     return {
         "final_table": "final_merged",
         "versioned_table": versioned_table,
@@ -832,4 +847,161 @@ def skip_merge(conn: sqlite3.Connection, session_id: str, base_group_id: str) ->
         "skipped": True,
         "merge_history": merge_history,
         "file_label": file_label,
+        "group_id": group_id,
+        "group_name": group_name,
+        "group_row": group_row,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Persist merge output: promote a step table to a versioned output + register
+# ---------------------------------------------------------------------------
+
+def persist_merge_output(
+    conn: sqlite3.Connection,
+    session_id: str,
+    result_table: str,
+    base_group_id: str,
+    source_group_id: str,
+    key_pairs: list[dict[str, str]],
+    pull_columns: list[str],
+) -> dict[str, Any]:
+    if not table_exists(conn, result_table):
+        raise ValueError(f"Result table {result_table} does not exist.")
+
+    merge_history = get_meta(conn, "merge_history") or []
+    version = len(merge_history) + 1
+    versioned_table = f"final_merged_v{version}"
+
+    drop_table(conn, versioned_table)
+    conn.execute(
+        f"ALTER TABLE {quote_id(result_table)} RENAME TO {quote_id(versioned_table)}"
+    )
+    conn.commit()
+
+    drop_table(conn, "final_merged")
+    conn.execute(
+        f"CREATE TABLE final_merged AS SELECT * FROM {quote_id(versioned_table)}"
+    )
+    conn.commit()
+
+    rows = table_row_count(conn, versioned_table)
+    cols_list = read_table_columns(conn, versioned_table)
+    preview = read_table(conn, versioned_table, 50)
+    col_stats = column_stats(conn, versioned_table)
+
+    schema = get_meta(conn, "groupSchemaTableRows") or []
+    name_map = {g["group_id"]: g.get("group_name", g["group_id"]) for g in schema}
+    base_name = name_map.get(base_group_id, base_group_id)
+    source_name = name_map.get(source_group_id, source_group_id)
+    raw_label = f"merge_{base_name}_{source_name}.xlsx"
+    file_label = "".join(c if c.isalnum() or c in "._- " else "_" for c in raw_label)
+
+    history_entry = {
+        "version": version,
+        "table_name": versioned_table,
+        "timestamp": datetime.now().isoformat(),
+        "base_group_id": base_group_id,
+        "source_group_ids": [source_group_id],
+        "rows": rows,
+        "cols": len(cols_list),
+        "file_label": file_label,
+    }
+    merge_history.append(history_entry)
+    set_meta(conn, "merge_history", merge_history)
+
+    group_id = f"merged_v{version}_{int(datetime.now().timestamp())}"
+    group_name = f"Merge Output v{version}"
+    register_table(conn, group_id, versioned_table)
+
+    group_row = {
+        "group_id": group_id,
+        "group_name": group_name,
+        "rows": rows,
+        "columns": cols_list,
+    }
+    schema.append(group_row)
+    set_meta(conn, "groupSchemaTableRows", schema)
+
+    return {
+        "version": version,
+        "versioned_table": versioned_table,
+        "file_label": file_label,
+        "rows": rows,
+        "cols": len(cols_list),
+        "columns": cols_list,
+        "column_stats": col_stats,
+        "preview": preview,
+        "merge_history": merge_history,
+        "group_id": group_id,
+        "group_name": group_name,
+        "group_row": group_row,
+        "key_pairs": key_pairs,
+        "pull_columns": pull_columns,
+        "base_group_id": base_group_id,
+        "source_group_id": source_group_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Delete a specific merge output version
+# ---------------------------------------------------------------------------
+
+def delete_merge_output(
+    conn: sqlite3.Connection,
+    session_id: str,
+    version: int,
+) -> dict[str, Any]:
+    merge_history = get_meta(conn, "merge_history") or []
+
+    entry = None
+    for e in merge_history:
+        if e.get("version") == version:
+            entry = e
+            break
+
+    if not entry:
+        raise ValueError(f"No merge history entry found for version {version}.")
+
+    versioned_table = entry.get("table_name", f"final_merged_v{version}")
+
+    if table_exists(conn, versioned_table):
+        drop_table(conn, versioned_table)
+
+    merge_history = [e for e in merge_history if e.get("version") != version]
+    set_meta(conn, "merge_history", merge_history)
+
+    schema = get_meta(conn, "groupSchemaTableRows") or []
+    removed_group_id = None
+    new_schema = []
+    for g in schema:
+        gid = g.get("group_id", "")
+        if gid.startswith(f"merged_v{version}_"):
+            removed_group_id = gid
+            unregister_table(conn, gid)
+        else:
+            new_schema.append(g)
+    set_meta(conn, "groupSchemaTableRows", new_schema)
+
+    if merge_history:
+        latest = max(merge_history, key=lambda e: e.get("version", 0))
+        latest_table = latest.get("table_name", "")
+        if latest_table and table_exists(conn, latest_table):
+            drop_table(conn, "final_merged")
+            conn.execute(
+                f"CREATE TABLE final_merged AS SELECT * FROM {quote_id(latest_table)}"
+            )
+            conn.commit()
+        else:
+            if table_exists(conn, "final_merged"):
+                drop_table(conn, "final_merged")
+    else:
+        if table_exists(conn, "final_merged"):
+            drop_table(conn, "final_merged")
+
+    return {
+        "deleted_version": version,
+        "removed_group_id": removed_group_id,
+        "merge_history": merge_history,
+        "groupSchemaTableRows": new_schema,
     }

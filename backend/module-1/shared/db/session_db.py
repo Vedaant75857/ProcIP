@@ -101,6 +101,12 @@ def register_table(conn: sqlite3.Connection, table_key: str, sql_name: str, comm
         conn.commit()
 
 
+def unregister_table(conn: sqlite3.Connection, table_key: str, commit: bool = True) -> None:
+    conn.execute("DELETE FROM table_registry WHERE table_key = ?", (table_key,))
+    if commit:
+        conn.commit()
+
+
 def lookup_sql_name(conn: sqlite3.Connection, table_key: str) -> str | None:
     row = conn.execute(
         "SELECT sql_name FROM table_registry WHERE table_key = ?", (table_key,)

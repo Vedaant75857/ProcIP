@@ -9,15 +9,15 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
-  RotateCcw,
   SkipForward,
   Sparkles,
   X,
   AlertTriangle,
   Download,
 } from "lucide-react";
-import { SurfaceCard, PrimaryButton, SecondaryButton, FillBar, itemVariants } from "../common/ui";
+import { SurfaceCard, PrimaryButton, itemVariants } from "../common/ui";
 import type { LogEntry } from "./StatusLog";
+import type { MergeOutput } from "../../App";
 import MergeReport from "./MergeReport";
 
 export interface MergingProps {
@@ -58,6 +58,9 @@ export interface MergingProps {
   mergeHistory: any[];
   setMergeHistory: (v: any[]) => void;
   onRegisterMergedGroup: (groupId: string, groupName: string, groupRow: any) => void;
+  mergeOutputs: MergeOutput[];
+  setMergeOutputs: React.Dispatch<React.SetStateAction<MergeOutput[]>>;
+  setOutputsPanelOpen: (v: boolean) => void;
 }
 
 const COLOR_MAP: Record<string, string> = {
@@ -99,6 +102,7 @@ export default function Merging(props: MergingProps) {
     mergeApprovedSources, setMergeApprovedSources,
     mergeHistory, setMergeHistory,
     onRegisterMergedGroup,
+    setMergeOutputs, setOutputsPanelOpen,
   } = props;
 
   const [basePreview, setBasePreview] = useState<{ columns: string[]; rows: any[] } | null>(null);
@@ -115,6 +119,7 @@ export default function Merging(props: MergingProps) {
   const [pendingBaseCols, setPendingBaseCols] = useState<string[]>([]);
   const simDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastBasePreviewId = useRef<string>("");
+  const autoApproveRef = useRef(false);
 
   const currentSourceGroupId = mergeSourceGroupIds[mergeCurrentSourceIdx] || "";
 
@@ -391,6 +396,7 @@ export default function Merging(props: MergingProps) {
             if (data.stage === "done" && data.result) {
               const vr = { ...data.result.validation_report, _execution_plan: data.result.merge_log?.execution_plan };
               setMergeValidationReport(vr);
+              autoApproveRef.current = true;
               addLog("Merge", "success", `Merged: ${data.result.merge_log?.rows || 0} rows, ${data.result.merge_log?.columns_pulled?.length || 0} columns pulled`);
             } else if (data.stage === "error") {
               throw new Error(data.message);
@@ -454,6 +460,23 @@ export default function Merging(props: MergingProps) {
           const data = await res.json();
           setMergeResult(data);
           if (data.merge_history) setMergeHistory(data.merge_history);
+
+          const baseName = groupNameMap[mergeBaseGroupId] || mergeBaseGroupId;
+          const srcNames = newApproved.map((s: any) => groupNameMap[s.source_group_id] || s.source_group_id);
+          const outputLabel = `Merged ${baseName}-${srcNames.join(",")}`;
+          setMergeOutputs((prev) => [
+            ...prev,
+            {
+              version: data.version ?? (prev.length + 1),
+              label: data.file_label || outputLabel,
+              rows: data.rows ?? 0,
+              cols: data.cols ?? 0,
+              sourcesCount: newApproved.length,
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+          setOutputsPanelOpen(true);
+
           addLog("Merge", "success", `Final merged table: ${data.rows} rows × ${data.cols} columns`);
           setStep(7);
         } finally {
@@ -465,15 +488,14 @@ export default function Merging(props: MergingProps) {
       addLog("Merge", "error", err.message || "Approve & finalize failed");
       setAiLoading(false);
     }
-  }, [mergeApprovedSources, mergeBaseGroupId, currentSourceGroupId, mergeSelectedKeys, mergePullColumns, mergeValidationReport, mergeCurrentSourceIdx, mergeSourceGroupIds, sessionId, addLog, setError, setAiLoading, setLoadingMessage, setMergeApprovedSources, setMergeCurrentSourceIdx, setMergeCommonColumns, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport, setMergeResult, setMergeHistory, setStep]);
+  }, [mergeApprovedSources, mergeBaseGroupId, currentSourceGroupId, mergeSelectedKeys, mergePullColumns, mergeValidationReport, mergeCurrentSourceIdx, mergeSourceGroupIds, sessionId, groupNameMap, addLog, setError, setAiLoading, setLoadingMessage, setMergeApprovedSources, setMergeCurrentSourceIdx, setMergeCommonColumns, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport, setMergeResult, setMergeHistory, setStep, setMergeOutputs, setOutputsPanelOpen]);
 
-  const handleRedo = useCallback(() => {
-    setMergeSelectedKeys([]);
-    setMergePullColumns([]);
-    setMergeSimulation(null);
-    setMergeValidationReport(null);
-    setPendingBaseCols([]);
-  }, [setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport]);
+  useEffect(() => {
+    if (autoApproveRef.current && mergeValidationReport && !executingMerge) {
+      autoApproveRef.current = false;
+      handleApprove();
+    }
+  }, [mergeValidationReport, executingMerge, handleApprove]);
 
   // --- Skip Merge ---
 
@@ -493,6 +515,21 @@ export default function Merging(props: MergingProps) {
       const data = await res.json();
       setMergeResult(data);
       if (data.merge_history) setMergeHistory(data.merge_history);
+
+      const skipLabel = groupNameMap[baseId] || baseId;
+      setMergeOutputs((prev) => [
+        ...prev,
+        {
+          version: data.version ?? (prev.length + 1),
+          label: data.file_label || skipLabel,
+          rows: data.rows ?? 0,
+          cols: data.cols ?? 0,
+          sourcesCount: 0,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+      setOutputsPanelOpen(true);
+
       addLog("Merge", "success", `Final file: ${data.rows} rows × ${data.cols} columns (no merge)`);
       setStep(7);
     } catch (err: any) {
@@ -501,117 +538,20 @@ export default function Merging(props: MergingProps) {
     } finally {
       setAiLoading(false);
     }
-  }, [sessionId, groupSchema, mergeBaseGroupId, addLog, setError, setAiLoading, setLoadingMessage, setMergeResult, setStep]);
-
-  // --- Download helpers ---
-
-  const downloadStepCsv = useCallback(async () => {
-    if (!sessionId || !currentSourceGroupId) {
-      setError("Cannot download — no active merge session or source group.");
-      return;
-    }
-    try {
-      const res = await fetch(`/api/merge/download-step-csv?sessionId=${encodeURIComponent(sessionId)}&sourceGroupId=${encodeURIComponent(currentSourceGroupId)}`);
-      if (!res.ok) {
-        let msg = "Failed to download step CSV";
-        try { const j = await res.json(); msg = j.error || msg; } catch { /* not json */ }
-        throw new Error(msg);
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      const srcName = groupNameMap[currentSourceGroupId] || currentSourceGroupId;
-      a.download = `step_merge_${srcName}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (err: any) {
-      setError(err.message || "Step CSV download failed");
-    }
-  }, [sessionId, currentSourceGroupId, groupNameMap, setError]);
-
-  const downloadXlsx = useCallback(async (version?: number) => {
-    try {
-      let url = `/api/merge/download-xlsx?sessionId=${encodeURIComponent(sessionId)}`;
-      if (version !== undefined) url += `&version=${version}`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        let msg = "Failed to download xlsx";
-        try { const j = await res.json(); msg = j.error || msg; } catch { /* not json */ }
-        throw new Error(msg);
-      }
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = `merge_output${version !== undefined ? `_v${version}` : ""}.xlsx`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
-    } catch (err: any) {
-      setError(err.message || "XLSX download failed");
-    }
-  }, [sessionId, setError]);
-
-  const downloadAllZip = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/merge/download-all?sessionId=${encodeURIComponent(sessionId)}`);
-      if (!res.ok) {
-        let msg = "Failed to download ZIP";
-        try { const j = await res.json(); msg = j.error || msg; } catch { /* not json */ }
-        throw new Error(msg);
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "all_merge_outputs.zip";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (err: any) {
-      setError(err.message || "ZIP download failed");
-    }
-  }, [sessionId, setError]);
-
-  const downloadCsv = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/merge/download-csv?sessionId=${encodeURIComponent(sessionId)}`);
-      if (!res.ok) throw new Error("Failed to download CSV");
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "final_merged.csv";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (err: any) {
-      setError(err.message || "CSV download failed");
-    }
-  }, [sessionId, setError]);
-
-  const downloadReport = useCallback(() => {
-    if (!mergeResult) return;
-    const blob = new Blob([JSON.stringify(mergeResult, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "merge_audit_report.json";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, [mergeResult]);
+  }, [sessionId, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setError, setAiLoading, setLoadingMessage, setMergeResult, setMergeHistory, setStep, setMergeOutputs, setOutputsPanelOpen]);
 
   // --- Post-merge actions ---
 
-  const handleRedoMerge = useCallback(() => {
+  const handleRedoMerge = useCallback(async () => {
+    try {
+      await fetch("/api/merge/redo-clear-cache", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+    } catch {
+      // best-effort cache clear
+    }
     setMergeResult(null);
     setMergeApprovedSources([]);
     setMergeValidationReport(null);
@@ -624,9 +564,11 @@ export default function Merging(props: MergingProps) {
     setBaseColClasses({});
     setSourceColClasses({});
     setPendingBaseCols([]);
-    addLog("Merge", "info", "Redo merge — returning to key selection.");
+    setMergeOutputs((prev) => prev.slice(0, -1));
+    setMergeHistory(mergeHistory.slice(0, -1));
+    addLog("Merge", "info", "Redo merge — cleared cache, returning to key selection.");
     setStep(6);
-  }, [addLog, setMergeResult, setMergeApprovedSources, setMergeValidationReport, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeCurrentSourceIdx, setStep]);
+  }, [sessionId, mergeHistory, addLog, setMergeResult, setMergeApprovedSources, setMergeValidationReport, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeCurrentSourceIdx, setStep, setMergeOutputs, setMergeHistory]);
 
   const [mergeAgainLoading, setMergeAgainLoading] = useState(false);
 
@@ -702,10 +644,6 @@ export default function Merging(props: MergingProps) {
         mergeApprovedSources={mergeApprovedSources}
         mergeHistory={mergeHistory}
         groupNameMap={groupNameMap}
-        onDownloadXlsx={downloadXlsx}
-        onDownloadCsv={downloadCsv}
-        onDownloadAllZip={downloadAllZip}
-        onDownloadReport={downloadReport}
         onRedoMerge={handleRedoMerge}
         onMergeAgain={handleMergeAgain}
         mergeAgainLoading={mergeAgainLoading}
@@ -1171,168 +1109,6 @@ export default function Merging(props: MergingProps) {
         </>
       )}
 
-      {/* Validation Report */}
-      {mergeValidationReport && (
-        <SurfaceCard title="Merge Validation" icon={Check}>
-          <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 px-4 py-3 mb-4">
-            <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
-              Source "{groupNameMap[currentSourceGroupId] || currentSourceGroupId}" merged successfully
-            </p>
-            <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
-              {mergeValidationReport.result_rows} rows · {mergeValidationReport.columns_pulled?.length || 0} columns pulled · Explosion factor: {mergeValidationReport.explosion_factor}×
-            </p>
-          </div>
-
-          {mergeValidationReport.column_stats && mergeValidationReport.column_stats.length > 0 && (
-            <div className="overflow-auto max-h-[300px] rounded-xl border border-neutral-200 dark:border-neutral-700 mb-4">
-              <table className="w-full text-xs">
-                <thead className="sticky top-0 bg-neutral-50 dark:bg-neutral-800">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-bold text-neutral-500">Column</th>
-                    <th className="px-3 py-2 text-left font-bold text-neutral-500">Fill Rate</th>
-                    <th className="px-3 py-2 text-right font-bold text-neutral-500">Nulls</th>
-                    <th className="px-3 py-2 text-right font-bold text-neutral-500">Distinct</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {mergeValidationReport.column_stats.map((cs: any) => (
-                    <tr key={cs.column_name} className="border-t border-neutral-100 dark:border-neutral-800">
-                      <td className="px-3 py-1.5 font-medium text-neutral-700 dark:text-neutral-300">{cs.column_name}</td>
-                      <td className="px-3 py-1.5"><FillBar rate={cs.fill_rate} /></td>
-                      <td className="px-3 py-1.5 text-right tabular-nums text-neutral-500">{cs.null_count}</td>
-                      <td className="px-3 py-1.5 text-right tabular-nums text-neutral-500">{cs.distinct_count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {mergeValidationReport.preview && mergeValidationReport.preview.length > 0 && (
-            <details className="mb-4">
-              <summary className="text-xs font-semibold text-neutral-500 cursor-pointer hover:text-neutral-700 dark:hover:text-neutral-300 mb-2">
-                Preview merged data ({mergeValidationReport.preview.length} rows)
-              </summary>
-              <div className="overflow-auto max-h-[250px] rounded-xl border border-neutral-200 dark:border-neutral-700">
-                <table className="w-full text-[11px]">
-                  <thead className="sticky top-0 bg-neutral-50 dark:bg-neutral-800">
-                    <tr>
-                      {Object.keys(mergeValidationReport.preview[0] || {}).map((col) => (
-                        <th key={col} className="px-2 py-1.5 font-bold text-neutral-500 whitespace-nowrap border-b">{col}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {mergeValidationReport.preview.slice(0, 30).map((row: any, ri: number) => (
-                      <tr key={ri} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
-                        {Object.values(row).map((val: any, ci: number) => (
-                          <td key={ci} className="px-2 py-1 border-b border-neutral-100 dark:border-neutral-800 whitespace-nowrap max-w-[180px] truncate">{String(val ?? "")}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </details>
-          )}
-
-          {(mergeValidationReport.unmatched_base_preview?.length > 0 || mergeValidationReport.unmatched_source_preview?.length > 0) && (
-            <details className="mb-4">
-              <summary className="text-xs font-semibold text-amber-600 cursor-pointer hover:text-amber-700 mb-2">
-                Unmatched rows ({mergeValidationReport.unmatched_base_preview?.length || 0} base, {mergeValidationReport.unmatched_source_preview?.length || 0} source)
-              </summary>
-              {mergeValidationReport.unmatched_base_preview?.length > 0 && (
-                <>
-                  <p className="text-[11px] text-neutral-400 mb-2">Base rows without a match in source:</p>
-                  <div className="overflow-auto max-h-[150px] rounded-lg border border-amber-200 dark:border-amber-800 mb-2">
-                    <table className="w-full text-[10px]">
-                      <thead className="sticky top-0 bg-amber-50 dark:bg-amber-950/30">
-                        <tr>
-                          {Object.keys(mergeValidationReport.unmatched_base_preview[0]).map((col) => (
-                            <th key={col} className="px-2 py-1 font-bold text-amber-600 whitespace-nowrap">{col}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {mergeValidationReport.unmatched_base_preview.slice(0, 10).map((row: any, ri: number) => (
-                          <tr key={ri}>
-                            {Object.values(row).map((val: any, ci: number) => (
-                              <td key={ci} className="px-2 py-0.5 whitespace-nowrap max-w-[150px] truncate text-neutral-600 dark:text-neutral-400">{String(val ?? "")}</td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-              {mergeValidationReport.unmatched_source_preview?.length > 0 && (
-                <>
-                  <p className="text-[11px] text-neutral-400 mb-2">Source rows without a match in base:</p>
-                  <div className="overflow-auto max-h-[150px] rounded-lg border border-amber-200 dark:border-amber-800">
-                    <table className="w-full text-[10px]">
-                      <thead className="sticky top-0 bg-amber-50 dark:bg-amber-950/30">
-                        <tr>
-                          {Object.keys(mergeValidationReport.unmatched_source_preview[0]).map((col) => (
-                            <th key={col} className="px-2 py-1 font-bold text-amber-600 whitespace-nowrap">{col}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {mergeValidationReport.unmatched_source_preview.slice(0, 10).map((row: any, ri: number) => (
-                          <tr key={ri}>
-                            {Object.values(row).map((val: any, ci: number) => (
-                              <td key={ci} className="px-2 py-0.5 whitespace-nowrap max-w-[150px] truncate text-neutral-600 dark:text-neutral-400">{String(val ?? "")}</td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-            </details>
-          )}
-
-          {/* Execution Plan Summary */}
-          {mergeValidationReport._execution_plan && (
-            <details className="mb-4">
-              <summary className="text-xs font-semibold text-neutral-500 cursor-pointer hover:text-neutral-700 dark:hover:text-neutral-300 mb-2">
-                Execution Plan {mergeValidationReport._execution_plan.index_used ? "(Index Used)" : "(No Index)"}
-              </summary>
-              <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 p-3 text-[11px] font-mono space-y-1">
-                {mergeValidationReport._execution_plan.details?.map((d: string, i: number) => (
-                  <p key={i} className="text-neutral-600 dark:text-neutral-400">{d}</p>
-                ))}
-                {mergeValidationReport._execution_plan.warnings?.length > 0 && (
-                  <div className="mt-2 text-amber-600 dark:text-amber-400">
-                    {mergeValidationReport._execution_plan.warnings.map((w: string, i: number) => (
-                      <p key={i} className="flex items-center gap-1"><AlertTriangle className="w-3 h-3" />{w}</p>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </details>
-          )}
-
-          <div className="flex items-center gap-3 pt-2">
-            <PrimaryButton onClick={handleApprove}>
-              <Check className="w-4 h-4" />
-              {mergeCurrentSourceIdx + 1 < mergeSourceGroupIds.length
-                ? `Approve & Continue (${mergeCurrentSourceIdx + 2}/${mergeSourceGroupIds.length})`
-                : "Approve & Finalize"}
-            </PrimaryButton>
-            <SecondaryButton onClick={downloadStepCsv}>
-              <Download className="w-4 h-4" />
-              Download This Result
-            </SecondaryButton>
-            <SecondaryButton onClick={handleRedo}>
-              <RotateCcw className="w-4 h-4" />
-              Redo with Different Keys
-            </SecondaryButton>
-          </div>
-        </SurfaceCard>
-      )}
     </motion.div>
   );
 }

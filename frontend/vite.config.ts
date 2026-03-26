@@ -19,12 +19,6 @@ export default defineConfig(({ mode }) => {
       port: 3000,
       hmr: process.env.DISABLE_HMR !== 'true',
       proxy: {
-        '/api/normalize': {
-          target: 'http://localhost:5000',
-          changeOrigin: true,
-          timeout: 600000,
-          rewrite: (path: string) => path.replace(/^\/api\/normalize/, '/api'),
-        },
         '/api': {
           target: 'http://localhost:3001',
           changeOrigin: true,

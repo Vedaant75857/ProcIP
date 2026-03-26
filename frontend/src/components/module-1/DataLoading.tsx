@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from "react";
-import { Upload, Loader2, FileText, Database, ArrowRight, FolderOpen, X, KeyRound, ChevronDown, ChevronRight, Trash2, RowsIcon, Check, MessageSquare, CheckCircle2 } from "lucide-react";
+import { Upload, Loader2, FileText, Database, ArrowRight, FolderOpen, X, KeyRound, ChevronDown, ChevronRight, Trash2, RowsIcon, Check, CheckCircle2 } from "lucide-react";
 import { motion } from "motion/react";
 import JSZip from "jszip";
 import { SurfaceCard, EmptyState, PrimaryButton, itemVariants } from "../common/ui";
@@ -61,6 +61,19 @@ async function buildZipFromFiles(files: { path: string; file: File }[]): Promise
   return new File([blob], "upload.zip", { type: "application/zip" });
 }
 
+async function extractZipEntries(zipFile: File): Promise<{ path: string; file: File }[]> {
+  const zip = await JSZip.loadAsync(await zipFile.arrayBuffer());
+  const results: { path: string; file: File }[] = [];
+  for (const [path, entry] of Object.entries(zip.files)) {
+    if (entry.dir) continue;
+    if (!fileHasAcceptedExt(path)) continue;
+    const blob = await entry.async("blob");
+    const name = path.split("/").pop() || path;
+    results.push({ path, file: new File([blob], name) });
+  }
+  return results;
+}
+
 interface DataLoadingProps {
   step: number;
   file: File | null;
@@ -77,7 +90,6 @@ interface DataLoadingProps {
   onProceedToAppend: () => void;
   onDeleteTable: (tableKey: string) => void;
   onSetHeaderRow: (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => void;
-  onSelectChatItem?: (item: { type: string; id: string; label: string }) => void;
   onDeleteRows?: (tableKey: string, rowIds: (string | number)[]) => void;
 }
 
@@ -266,7 +278,6 @@ export default function DataLoading({
   onProceedToAppend,
   onDeleteTable,
   onSetHeaderRow,
-  onSelectChatItem,
   onDeleteRows,
 }: DataLoadingProps) {
   const [isDragOver, setIsDragOver] = useState(false);
@@ -279,6 +290,15 @@ export default function DataLoading({
   const dragCounter = useRef(0);
   const zipInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const accumulatedFilesRef = useRef<{ path: string; file: File }[]>([]);
+
+  const rebuildFromAccumulated = useCallback(async () => {
+    const all = accumulatedFilesRef.current;
+    if (all.length === 0) return;
+    const zipFile = await buildZipFromFiles(all);
+    setFile(zipFile);
+    setFileLabel(`${all.length} file${all.length !== 1 ? "s" : ""} ready for upload`);
+  }, [setFile]);
 
   const toggleRowSelection = (tableKey: string, rowId: string | number) => {
     setSelectedRowIds(prev => {
@@ -304,30 +324,29 @@ export default function DataLoading({
     }
     if (entries.length === 0) return;
 
-    if (entries.length === 1 && entries[0].isFile && entries[0].name.toLowerCase().endsWith(".zip")) {
-      const f = await readEntryAsFile(entries[0] as FileSystemFileEntry);
-      setFile(f);
-      setFileLabel(f.name);
-      return;
-    }
-
     setZipping(true);
     try {
-      const allFiles: { path: string; file: File }[] = [];
+      const newFiles: { path: string; file: File }[] = [];
+
       for (const entry of entries) {
-        allFiles.push(...(await collectFilesFromEntry(entry)));
+        if (entry.isFile && entry.name.toLowerCase().endsWith(".zip")) {
+          const f = await readEntryAsFile(entry as FileSystemFileEntry);
+          newFiles.push(...(await extractZipEntries(f)));
+        } else {
+          newFiles.push(...(await collectFilesFromEntry(entry)));
+        }
       }
-      if (allFiles.length === 0) {
-        setZipping(false);
-        return;
-      }
-      const zipFile = await buildZipFromFiles(allFiles);
-      setFile(zipFile);
-      setFileLabel(`${allFiles.length} file${allFiles.length !== 1 ? "s" : ""} zipped for upload`);
+
+      if (newFiles.length === 0) return;
+
+      const existingPaths = new Set(accumulatedFilesRef.current.map((f) => f.path));
+      const deduped = newFiles.filter((f) => !existingPaths.has(f.path));
+      accumulatedFilesRef.current = [...accumulatedFilesRef.current, ...deduped];
+      await rebuildFromAccumulated();
     } finally {
       setZipping(false);
     }
-  }, [setFile]);
+  }, [rebuildFromAccumulated]);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -358,13 +377,31 @@ export default function DataLoading({
     }
   }, [processDroppedItems]);
 
-  const handleZipInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const f = e.target.files[0];
-      setFile(f);
-      setFileLabel(f.name);
+  const handleZipInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    setZipping(true);
+    try {
+      const newFiles: { path: string; file: File }[] = [];
+      for (let i = 0; i < e.target.files.length; i++) {
+        const f = e.target.files[i];
+        if (f.name.toLowerCase().endsWith(".zip")) {
+          newFiles.push(...(await extractZipEntries(f)));
+        } else if (fileHasAcceptedExt(f.name)) {
+          newFiles.push({ path: f.name, file: f });
+        }
+      }
+      if (newFiles.length === 0) return;
+
+      const existingPaths = new Set(accumulatedFilesRef.current.map((f) => f.path));
+      const deduped = newFiles.filter((f) => !existingPaths.has(f.path));
+      accumulatedFilesRef.current = [...accumulatedFilesRef.current, ...deduped];
+      await rebuildFromAccumulated();
+    } finally {
+      setZipping(false);
+      if (zipInputRef.current) zipInputRef.current.value = "";
     }
-  };
+  }, [rebuildFromAccumulated]);
 
   const handleFolderInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files;
@@ -372,29 +409,30 @@ export default function DataLoading({
 
     setZipping(true);
     try {
-      const collected: { path: string; file: File }[] = [];
+      const newFiles: { path: string; file: File }[] = [];
       for (let i = 0; i < fileList.length; i++) {
         const f = fileList[i];
         if (fileHasAcceptedExt(f.name)) {
           const path = (f as any).webkitRelativePath || f.name;
-          collected.push({ path, file: f });
+          newFiles.push({ path, file: f });
         }
       }
-      if (collected.length === 0) {
-        setZipping(false);
-        return;
-      }
-      const zipFile = await buildZipFromFiles(collected);
-      setFile(zipFile);
-      setFileLabel(`${collected.length} file${collected.length !== 1 ? "s" : ""} zipped for upload`);
+      if (newFiles.length === 0) return;
+
+      const existingPaths = new Set(accumulatedFilesRef.current.map((f) => f.path));
+      const deduped = newFiles.filter((f) => !existingPaths.has(f.path));
+      accumulatedFilesRef.current = [...accumulatedFilesRef.current, ...deduped];
+      await rebuildFromAccumulated();
     } finally {
       setZipping(false);
+      if (folderInputRef.current) folderInputRef.current.value = "";
     }
-  }, [setFile]);
+  }, [rebuildFromAccumulated]);
 
   const clearFile = () => {
     setFile(null);
     setFileLabel(null);
+    accumulatedFilesRef.current = [];
     if (zipInputRef.current) zipInputRef.current.value = "";
     if (folderInputRef.current) folderInputRef.current.value = "";
   };
@@ -455,13 +493,24 @@ export default function DataLoading({
                       <Upload className="w-8 h-8" />
                     </div>
                     <p className="text-sm font-bold text-neutral-900 dark:text-white">{fileLabel}</p>
-                    <button
-                      type="button"
-                      onClick={clearFile}
-                      className="mt-1 inline-flex items-center gap-1 text-xs text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                    >
-                      <X className="w-3 h-3" /> Remove
-                    </button>
+                    <p className="text-xs text-neutral-400 dark:text-neutral-500">Drop or browse more files to add them</p>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => zipInputRef.current?.click()}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                      >
+                        <FileText className="w-3 h-3" /> Add Files
+                      </button>
+                      <span className="text-neutral-300 dark:text-neutral-600">|</span>
+                      <button
+                        type="button"
+                        onClick={clearFile}
+                        className="inline-flex items-center gap-1 text-xs text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                      >
+                        <X className="w-3 h-3" /> Remove All
+                      </button>
+                    </div>
                     <motion.div
                       initial={{ scale: 0 }}
                       animate={{ scale: 1 }}
@@ -577,16 +626,6 @@ export default function DataLoading({
                     </span>
 
                     <div className="flex items-center gap-1.5 shrink-0">
-                      {onSelectChatItem && (
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); onSelectChatItem({ type: "table", id: inv.table_key, label: inv.table_key }); }}
-                          title="Ask AI about this table"
-                          className="p-1.5 rounded-lg text-neutral-400 dark:text-neutral-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-                        >
-                          <MessageSquare className="w-4 h-4" />
-                        </button>
-                      )}
                       {isExpanded && !isHeaderEdit && (
                         <button
                           type="button"

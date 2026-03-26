@@ -14,6 +14,7 @@ from openpyxl import Workbook
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from shared.db import (
+    drop_table,
     get_meta,
     get_session_db,
     lookup_sql_name,
@@ -230,6 +231,35 @@ def skip():
         return jsonify({"error": str(exc)}), 500
 
 
+@merging_bp.route("/merge/redo-clear-cache", methods=["POST"])
+def redo_clear_cache():
+    """Drop the latest finalized merge tables and history entry so the user can redo."""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        if not session_id:
+            return jsonify({"error": "Missing sessionId"}), 400
+
+        conn = get_session_db(session_id)
+        merge_history = get_meta(conn, "merge_history") or []
+
+        if merge_history:
+            latest = merge_history.pop()
+            versioned_table = latest.get("table_name", "")
+            if versioned_table and table_exists(conn, versioned_table):
+                drop_table(conn, versioned_table)
+            set_meta(conn, "merge_history", merge_history)
+
+        if table_exists(conn, "final_merged"):
+            drop_table(conn, "final_merged")
+
+        set_meta(conn, "mergeApprovedSources", [])
+
+        return jsonify({"cleared": True})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @merging_bp.route("/merge/register-merged-group", methods=["POST"])
 def register_merged_group():
     """Copy final_merged into a new group so it can be used in subsequent merges."""
@@ -278,14 +308,30 @@ def register_merged_group():
 def download_csv():
     try:
         session_id = request.args.get("sessionId")
+        version_str = request.args.get("version")
         if not session_id:
             return jsonify({"error": "sessionId query parameter is required"}), 400
         conn = get_session_db(session_id)
-        if not table_exists(conn, "final_merged"):
+
+        target_table = "final_merged"
+        filename = "final_merged.csv"
+
+        if version_str:
+            version = int(version_str)
+            merge_history = get_meta(conn, "merge_history") or []
+            entry = next((e for e in merge_history if e["version"] == version), None)
+            if not entry:
+                return jsonify({"error": f"Version {version_str} not found in merge history"}), 404
+            target_table = entry["table_name"]
+            label = entry.get("file_label", f"merge_v{version}")
+            safe_label = "".join(c if c.isalnum() or c in "._- " else "_" for c in label)
+            filename = f"{safe_label}.csv"
+
+        if not table_exists(conn, target_table):
             return jsonify({"error": "No merged data found"}), 404
 
         def _generate():
-            columns = read_table_columns(conn, "final_merged")
+            columns = read_table_columns(conn, target_table)
             buf = io.StringIO()
             writer = csv.writer(buf)
             writer.writerow(columns)
@@ -293,7 +339,7 @@ def download_csv():
             buf.seek(0)
             buf.truncate()
 
-            cursor = conn.execute(f"SELECT * FROM {quote_id('final_merged')}")
+            cursor = conn.execute(f"SELECT * FROM {quote_id(target_table)}")
             while True:
                 rows = cursor.fetchmany(2000)
                 if not rows:
@@ -308,7 +354,7 @@ def download_csv():
             stream_with_context(_generate()),
             headers={
                 "Content-Type": "text/csv; charset=utf-8",
-                "Content-Disposition": 'attachment; filename="final_merged.csv"',
+                "Content-Disposition": f'attachment; filename="{filename}"',
             },
         )
     except Exception as exc:
@@ -488,6 +534,52 @@ def download_all():
                 xlsx_bytes = _table_to_xlsx_bytes(conn, tbl)
                 filename = entry.get("file_label", f"merge_v{entry['version']}.xlsx")
                 zf.writestr(filename, xlsx_bytes)
+        zip_buf.seek(0)
+
+        return Response(
+            zip_buf.getvalue(),
+            headers={
+                "Content-Type": "application/zip",
+                "Content-Disposition": 'attachment; filename="all_merge_outputs.zip"',
+            },
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/download-all-csv", methods=["GET"])
+def download_all_csv():
+    """Download all versioned merge outputs as a single ZIP of CSV files."""
+    try:
+        session_id = request.args.get("sessionId")
+        if not session_id:
+            return jsonify({"error": "sessionId query parameter is required"}), 400
+        conn = get_session_db(session_id)
+
+        merge_history = get_meta(conn, "merge_history") or []
+        if not merge_history:
+            return jsonify({"error": "No merge history found"}), 404
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for entry in merge_history:
+                tbl = entry["table_name"]
+                if not table_exists(conn, tbl):
+                    continue
+                columns = read_table_columns(conn, tbl)
+                csv_buf = io.StringIO()
+                writer = csv.writer(csv_buf)
+                writer.writerow(columns)
+                cursor = conn.execute(f"SELECT * FROM {quote_id(tbl)}")
+                while True:
+                    rows = cursor.fetchmany(2000)
+                    if not rows:
+                        break
+                    for row in rows:
+                        writer.writerow([row[c] for c in columns])
+                label = entry.get("file_label", f"merge_v{entry['version']}")
+                safe_label = "".join(c if c.isalnum() or c in "._- " else "_" for c in label)
+                zf.writestr(f"{safe_label}.csv", csv_buf.getvalue())
         zip_buf.seek(0)
 
         return Response(

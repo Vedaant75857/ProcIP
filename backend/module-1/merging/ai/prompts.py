@@ -13,7 +13,7 @@ Selection criteria (in priority order):
 Return JSON:
 {
   "recommended": "<group_id of the best base table>",
-  "reasoning": "<brief explanation why this table is best>",
+  "reasoning": "<1 sentence, max 15 words, explaining why this is the best base table>",
   "rankings": [
     {"group_id": "<id>", "score": <0-100>, "reason": "<brief reason>"},
     ...

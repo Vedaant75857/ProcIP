@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Loader2, ChevronRight, ChevronDown, LayoutGrid, ListChecks, ArrowRight, Info, Plus, MoreHorizontal, Undo2, Ban, X, Eye, EyeOff, MessageSquare, Database } from "lucide-react";
+import { Loader2, ChevronRight, ChevronDown, LayoutGrid, ListChecks, ArrowRight, Info, Plus, MoreHorizontal, Undo2, Ban, X, Eye, EyeOff, Database } from "lucide-react";
 import { motion } from "motion/react";
 import AppendReport from "./AppendReport";
 import { PrimaryButton, EmptyState } from "../common/ui";
@@ -22,7 +22,6 @@ interface AppendingProps {
   restoreTable: (tableKey: string) => void;
   appendReport: any[] | null;
   handleProceedToHeaderNorm: () => void;
-  onSelectChatItem?: (item: { type: string; id: string; label: string }) => void;
 }
 
 /* ─── Table Action Menu ─── */
@@ -111,7 +110,6 @@ export default function Appending({
   restoreTable,
   appendReport,
   handleProceedToHeaderNorm,
-  onSelectChatItem,
 }: AppendingProps) {
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
   const [showExcluded, setShowExcluded] = useState(false);
@@ -203,16 +201,6 @@ export default function Appending({
                           </span>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
-                          {onSelectChatItem && (
-                            <button
-                              type="button"
-                              onClick={() => onSelectChatItem({ type: "group", id: g.group_id, label: g.group_name || g.group_id })}
-                              className="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-950/30 text-neutral-400 hover:text-red-600 transition-colors"
-                              title="Ask AI about this group"
-                            >
-                              <MessageSquare className="w-3.5 h-3.5" />
-                            </button>
-                          )}
                         </div>
                       </div>
 

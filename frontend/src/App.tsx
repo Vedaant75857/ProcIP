@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { Database, AlertCircle, CheckCircle2, KeyRound, RefreshCw, MessageSquare, Sun, Moon, Table2, Sparkles } from "lucide-react";
+import { Database, AlertCircle, CheckCircle2, KeyRound, RefreshCw, Package, Sun, Moon, Table2 } from "lucide-react";
 
 import { AnimatePresence, motion } from "motion/react";
 import DataLoading from "./components/module-1/DataLoading";
@@ -9,14 +9,11 @@ import Appending from "./components/module-1/Appending";
 import Merging from "./components/module-1/Merging";
 import LoadingOverlay from "./components/module-1/LoadingOverlay";
 import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
-import ChatPanel from "./components/module-1/ChatPanel";
+import MergeOutputsPanel from "./components/module-1/MergeOutputsPanel";
 import DataPreviewOverlay from "./components/module-1/DataPreviewOverlay";
 import { StepHero, pageVariants, horizontalVariants } from "./components/common/ui";
 import { useTheme } from "./components/common/ThemeProvider";
-import NormDashboard from "./components/module-2/NormDashboard";
-import ErrorBoundary from "./components/common/ErrorBoundary";
 
-type ActiveModule = "stitching" | "normalization";
 type OperationId =
   | "header_norm_run"
   | "header_norm_apply"
@@ -33,10 +30,17 @@ function jsonSafeStringify(value: unknown): string {
   });
 }
 
+export interface MergeOutput {
+  version: number;
+  label: string;
+  rows: number;
+  cols: number;
+  sourcesCount: number;
+  timestamp: string;
+}
+
 export default function App() {
   const { theme, toggleTheme } = useTheme();
-  const [activeModule, setActiveModule] = useState<ActiveModule>("stitching");
-  const [importedCsvForNorm, setImportedCsvForNorm] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [loading, setLoading] = useState(false);
@@ -65,7 +69,6 @@ export default function App() {
   const slideDirection = step >= prevStepRef.current ? 1 : -1;
   useEffect(() => {
     setLoading(false);
-    setAiLoading(false);
     setError(null);
     setLastFailedAction(null);
     setMaxStepReached(prev => Math.max(prev, step));
@@ -135,13 +138,9 @@ export default function App() {
   const [crossGroupOverview, setCrossGroupOverview] = useState<any | null>(null);
   const [groupInsightsLoading, setGroupInsightsLoading] = useState(false);
 
-  // Chat
-  const [chatOpen, setChatOpen] = useState(false);
-  const [selectedChatItem, setSelectedChatItem] = useState<{ type: string; id: string; label: string } | null>(null);
-  const onSelectChatItem = useCallback((item: { type: string; id: string; label: string }) => {
-    setSelectedChatItem(item);
-    setChatOpen(true);
-  }, []);
+  // Merge Outputs Panel
+  const [mergeOutputs, setMergeOutputs] = useState<MergeOutput[]>([]);
+  const [outputsPanelOpen, setOutputsPanelOpen] = useState(false);
 
   const insightsAbortRef = useRef<AbortController | null>(null);
 
@@ -225,6 +224,7 @@ export default function App() {
       if (s.step) { setStep(s.step); setMaxStepReached(s.maxStepReached || s.step); }
       if (s.excludedTables) setExcludedTables(s.excludedTables);
       if (s.cleaningConfigs) setCleaningConfigs(s.cleaningConfigs);
+      if (s.mergeOutputs) setMergeOutputs(s.mergeOutputs);
 
       const sid = s.sessionId;
       if (!sid) return;
@@ -276,6 +276,7 @@ export default function App() {
         appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
         mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources, mergeHistory,
         mergeResult: mergeResult ? { ...mergeResult, csv: undefined } : null,
+        mergeOutputs,
       };
       sessionStorage.setItem(STORAGE_KEY, jsonSafeStringify(persistable));
     } catch { /* storage full or serialization error */ }
@@ -287,6 +288,7 @@ export default function App() {
     appendGroups, unassigned, excludedTables,
     appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
     mergeBaseGroupId, mergeSourceGroupIds, mergeApprovedSources, mergeResult, mergeHistory,
+    mergeOutputs,
   ]);
 
   // Warn before page unload when session is active
@@ -320,7 +322,20 @@ export default function App() {
     if (patch.mergeApprovedSources) setMergeApprovedSources(patch.mergeApprovedSources);
     if (patch.mergeResult) {
       setMergeResult(patch.mergeResult);
-      if (patch.mergeResult.merge_history) setMergeHistory(patch.mergeResult.merge_history);
+      if (patch.mergeResult.merge_history) {
+        setMergeHistory(patch.mergeResult.merge_history);
+        setMergeOutputs((prev) => {
+          if (prev.length > 0) return prev;
+          return (patch.mergeResult.merge_history as any[]).map((entry: any) => ({
+            version: entry.version,
+            label: entry.file_label || `Merge v${entry.version}`,
+            rows: entry.rows ?? 0,
+            cols: entry.cols ?? 0,
+            sourcesCount: entry.sources_count ?? 0,
+            timestamp: entry.timestamp || new Date().toISOString(),
+          }));
+        });
+      }
     }
   }, []);
 
@@ -898,37 +913,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Module selector */}
-        <div className="px-4 pt-4 pb-2">
-          <div className="flex rounded-2xl bg-neutral-100 dark:bg-neutral-800 p-1">
-            <button
-              onClick={() => setActiveModule("stitching")}
-              className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all ${
-                activeModule === "stitching"
-                  ? "bg-white dark:bg-neutral-700 text-red-600 dark:text-red-400 shadow-sm"
-                  : "text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-300"
-              }`}
-            >
-              <Database className="w-3.5 h-3.5" />
-              Stitching
-            </button>
-            <button
-              onClick={() => setActiveModule("normalization")}
-              className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all ${
-                activeModule === "normalization"
-                  ? "bg-white dark:bg-neutral-700 text-red-600 dark:text-red-400 shadow-sm"
-                  : "text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-300"
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              Normalize
-            </button>
-          </div>
-        </div>
-
         <div className="flex-1 overflow-y-auto px-4 py-3">
-          {activeModule === "stitching" ? (
-          <>
               <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500 font-semibold mb-4 px-2">Workflow</p>
               <nav className="relative">
                 <div className="absolute left-[18px] top-5 bottom-5 w-px bg-neutral-200 dark:bg-neutral-700 z-0" />
@@ -972,26 +957,13 @@ export default function App() {
                   })}
                 </div>
               </nav>
-          </>
-          ) : (
-          <>
-          <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500 font-semibold mb-4 px-2">Normalization</p>
-          <nav className="space-y-1">
-            {["Upload / Import", "Header Mapping", "Run Normalizations", "Download"].map((label, i) => (
-              <div key={label} className="flex items-center gap-3 px-3 py-2.5 rounded-2xl text-neutral-600 dark:text-neutral-400">
-                <span className="h-9 w-9 rounded-xl flex items-center justify-center text-xs font-bold bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400 shrink-0">{i + 1}</span>
-                <p className="text-sm font-semibold truncate">{label}</p>
-              </div>
-            ))}
-          </nav>
-          </>
-          )}
+          
         </div>
         <div
           className={`p-4 border-t border-neutral-200/80 dark:border-neutral-700/80 flex items-center gap-2.5 text-xs font-medium cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors ${
             apiKey ? "text-emerald-600" : "text-red-500"
           }`}
-          onClick={() => { setActiveModule("stitching"); setStep(1); }}
+          onClick={() => { setStep(1); }}
           title={apiKey ? "API key is configured" : "Click to set API key"}
         >
           <KeyRound className="w-4 h-4" />
@@ -1004,34 +976,6 @@ export default function App() {
         <div className="flex-1 overflow-y-auto p-8">
           <div className="max-w-6xl mx-auto space-y-6">
 
-          {activeModule === "normalization" ? (
-            <>
-              <div className="flex justify-between items-center">
-                <div>
-                  <h2 className="text-2xl font-bold text-neutral-900 dark:text-white">Data Normalization</h2>
-                  <p className="text-sm text-neutral-500 mt-1">AI-powered procurement data standardization</p>
-                </div>
-                <div className="flex gap-2">
-                  <motion.button
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    onClick={toggleTheme}
-                    className="p-2.5 rounded-xl bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shadow-sm backdrop-blur-sm text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white transition-colors"
-                  >
-                    {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-                  </motion.button>
-                </div>
-              </div>
-              <ErrorBoundary moduleName="Data Normalization">
-                <NormDashboard
-                  importedCsv={importedCsvForNorm}
-                  onImportComplete={() => setImportedCsvForNorm(null)}
-                  apiKey={apiKey}
-                />
-              </ErrorBoundary>
-            </>
-          ) : (
-            <>
             <div className="flex justify-end gap-2">
               {Object.keys(previews).length > 0 && (
                 <motion.button
@@ -1124,7 +1068,6 @@ export default function App() {
                   onProceedToAppend={() => setStep(3)}
                   onDeleteTable={handleDeleteTable}
                   onSetHeaderRow={handleSetHeaderRow}
-                  onSelectChatItem={onSelectChatItem}
                   onDeleteRows={handleDeleteRows}
                 />
 
@@ -1147,7 +1090,6 @@ export default function App() {
                     restoreTable={restoreTable}
                     appendReport={appendReport}
                     handleProceedToHeaderNorm={handleProceedToHeaderNorm}
-                    onSelectChatItem={onSelectChatItem}
                   />
                 )}
 
@@ -1228,6 +1170,9 @@ export default function App() {
                         mergeHistory={mergeHistory}
                         setMergeHistory={setMergeHistory}
                         onRegisterMergedGroup={handleRegisterMergedGroup}
+                        mergeOutputs={mergeOutputs}
+                        setMergeOutputs={setMergeOutputs}
+                        setOutputsPanelOpen={setOutputsPanelOpen}
                       />
                     </motion.div>
                   </AnimatePresence>
@@ -1237,42 +1182,34 @@ export default function App() {
             </AnimatePresence>
 
             <LoadingOverlay isLoading={aiLoading} message={loadingMessage} onCancel={cancelAiRequest} />
-            </>
-          )}
 
           </div>
         </div>
         <StatusLog entries={statusLog} onClear={() => setStatusLog([])} />
 
-        {!chatOpen && sessionId && (
+        {mergeOutputs.length > 0 && !outputsPanelOpen && (
           <motion.button
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             whileHover={{ scale: 1.08 }}
             whileTap={{ scale: 0.92 }}
-            onClick={() => setChatOpen(true)}
-            className={`absolute bottom-20 right-6 z-30 w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-rose-600 text-white shadow-xl shadow-red-200/40 dark:shadow-red-900/30 flex items-center justify-center ${
-              selectedChatItem ? "ring-4 ring-red-200 ring-offset-2" : ""
-            }`}
-            title="Open Data Assistant"
+            onClick={() => setOutputsPanelOpen(true)}
+            className="absolute bottom-20 right-6 z-30 w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-600 text-white shadow-xl shadow-emerald-200/40 dark:shadow-emerald-900/30 flex items-center justify-center"
+            title="Open Merge Outputs"
           >
-            <MessageSquare className="w-5 h-5" />
-            {selectedChatItem && (
-              <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-white" />
-            )}
+            <Package className="w-5 h-5" />
+            <span className="absolute -top-1 -right-1 min-w-[1.25rem] h-5 rounded-full bg-red-500 border-2 border-white text-[10px] font-bold flex items-center justify-center px-1">
+              {mergeOutputs.length}
+            </span>
           </motion.button>
         )}
       </main>
 
-      {chatOpen && sessionId && (
-        <ChatPanel
+      {outputsPanelOpen && mergeOutputs.length > 0 && sessionId && (
+        <MergeOutputsPanel
+          mergeOutputs={mergeOutputs}
           sessionId={sessionId}
-          apiKey={apiKey}
-          stage={step}
-          selectedItem={selectedChatItem}
-          isOpen={chatOpen}
-          onClose={() => setChatOpen(false)}
-          onClearSelection={() => setSelectedChatItem(null)}
+          onClose={() => setOutputsPanelOpen(false)}
         />
       )}
 

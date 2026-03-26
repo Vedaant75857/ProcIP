@@ -22,7 +22,7 @@ const DEFINITIONS: Record<string, string> = {
 };
 
 function GroupCard({ group }: { key?: React.Key; group: any }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const integrityOk = group.row_integrity;
 
   return (
